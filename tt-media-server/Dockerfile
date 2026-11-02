@@ -16,8 +16,10 @@ LABEL maintainer="Igor Djuric <idjuric@tenstorrent.com>"
 LABEL org.opencontainers.image.source=https://github.com/tenstorrent/tt-inference-server
 
 ARG DEBIAN_FRONTEND=noninteractive
-# default commit sha, override with --build-arg TT_METAL_COMMIT_SHA_OR_TAG=<sha>
-ARG TT_METAL_COMMIT_SHA_OR_TAG=915d9e67ad572b97fbaf5339bd3e518db6dc05e3
+# The image is built from a local tt-metal BuildKit context. Override this with
+# the exact local tt-metal commit at build time.
+# Example: --build-arg TT_METAL_COMMIT_SHA_OR_TAG=3c8681218b0951637991d20ce6b7e341df3b6879
+ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
 
 # make build commit SHA available in the image for reference and debugging
 ENV TT_METAL_COMMIT_SHA_OR_TAG=${TT_METAL_COMMIT_SHA_OR_TAG}
@@ -94,7 +96,13 @@ ENV UV_HTTP_RETRIES=10
 # symlinks still resolve after the copy.
 ENV UV_PYTHON_INSTALL_DIR=${TT_METAL_HOME}/uv-python
 
-# build tt-metal
+# copy the local tt-metal source supplied with:
+#   --build-context tt-metal-local=/local/lnn/tt-metal
+# The main build context remains /local/lnn/TL-inference-server, so the
+# tt-media-server COPY instructions below continue to use the existing paths.
+COPY --from=tt-metal-local . ${TT_METAL_HOME}
+
+# build local tt-metal
 #
 # Build-only content is reclaimed at the end of THIS RUN rather than in the cleanup
 # step at the end of the builder stage. Deleting a file in a later layer only writes a
@@ -102,11 +110,8 @@ ENV UV_PYTHON_INSTALL_DIR=${TT_METAL_HOME}/uv-python
 # the whole build, including the final export and unpack where the build has been
 # running out of disk. Removing them here means they are never committed at all.
 # The resulting image is unchanged -- this only lowers disk during the build.
-RUN git clone --depth 1 https://github.com/tenstorrent-metal/tt-metal.git ${TT_METAL_HOME} \
-    && cd ${TT_METAL_HOME} \
-    && git fetch --depth 1 origin ${TT_METAL_COMMIT_SHA_OR_TAG} \
-    && git checkout ${TT_METAL_COMMIT_SHA_OR_TAG} \
-    && git submodule update --init --recursive --depth 1 \
+RUN cd ${TT_METAL_HOME} \
+    && test -f ./install_dependencies.sh \
     && ./install_dependencies.sh --docker \
     # Older pinned tt-metal commits (e.g. BGE's 65718bb) predate create_venv.sh's
     # --bundle-python flag and exit 1 on unknown arguments, so only pass it when
@@ -277,7 +282,7 @@ LABEL org.opencontainers.image.source=https://github.com/tenstorrent/tt-inferenc
 
 # Reuse all args and environment variables
 ARG DEBIAN_FRONTEND=noninteractive
-ARG TT_METAL_COMMIT_SHA_OR_TAG=915d9e67ad572b97fbaf5339bd3e518db6dc05e3
+ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
 ARG CONTAINER_APP_UID=1000
 ARG CONTAINER_APP_USERNAME=container_app_user
 ARG HOME_DIR=/home/${CONTAINER_APP_USERNAME}
