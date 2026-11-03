@@ -114,6 +114,25 @@ flux3_full_mapping_test.py
   -> transformer_flux3.py 中的权重映射和 TTNN 参数写入
 ```
 
+### 这个文件中具体实现了什么
+
+这里虽然和上一节使用同一个 `transformer_flux3.py`，但使用的是文件中的不同代码区域：
+
+```text
+结构定义区域：
+Flux3TimeIn
+Flux3ModeBlock
+Flux3SingleBlock
+Flux3Transformer.__init__
+
+权重映射区域：
+Flux3Transformer._block_state()
+Flux3Transformer._flux3_state_dict()
+Flux3Transformer.load_flux3_checkpoint()
+```
+
+因此本步骤不是重新建立网络结构，而是给上一节已经创建好的 TTNN module 填充真实 FLUX.3 权重。
+
 ### 做了什么
 
 新增并实现以下模块：
@@ -133,6 +152,27 @@ Flux3Transformer
 5. TTNN attention、SwiGLU、动态 LayerNorm 和输出投影；
 6. 5 个 text mode block、5 个 image mode block、5 个 image-condition mode block；
 7. 28 个 joint single block。
+
+### 文件内的具体实现位置
+
+```text
+Flux3TimeIn.__init__() / forward()
+  负责时间条件的输入投影。
+
+Flux3ModeBlock.__init__() / forward()
+  负责 mode block 的 attention、FFN、LayerNorm 和调制。
+
+Flux3SingleBlock.__init__() / forward()
+  负责 joint token 流中的 single block。
+
+Flux3Transformer.__init__()
+  创建 time_in、输入投影、三组 mode block、single block 和输出层。
+
+Flux3Transformer.forward(...)
+  按 text mode blocks -> image mode blocks -> single blocks 的顺序执行前向。
+```
+
+这一部分只负责“模型结构和前向计算图的定义”。它不负责读取 `model.safetensors`，权重读取和 key 转换在下一步的 `_block_state()`、`_flux3_state_dict()` 中完成。
 
 ### 结构数量说明
 
@@ -184,6 +224,48 @@ report = model.load_flux3_checkpoint(
 4. 按 TTNN 线性层布局转换 SwiGLU 权重。
 5. 映射 attention 输出投影、输入投影、调制参数和 final layer。
 6. 使用 `safe_open` 按 tensor 读取，避免把约 11 GB 权重一次性复制到额外内存。
+
+### 文件内的具体实现位置
+
+权重映射主要集中在同一个文件的以下方法中：
+
+```text
+Flux3Transformer._block_state(reader, prefix)
+```
+
+作用：读取一个 block 的 Q/K/V、attention output、FFN 和 modulation 权重；其中 Q、K、V 通过：
+
+```python
+torch.cat((q, k, v), dim=0)
+```
+
+合并成 TTNN attention 使用的 `attn.to_qkv.weight`。
+
+```text
+Flux3Transformer._flux3_state_dict(checkpoint)
+```
+
+作用：遍历完整 safetensors checkpoint，把 source key 映射到 TTNN module 的 state key，并分别处理：
+
+```text
+mode_blocks              <- content_mode_blocks
+text_mode_blocks         <- txt_mode_blocks
+single_blocks            <- single_blocks
+image_cond_mode_blocks   <- image_cond_mode_blocks
+```
+
+```text
+Flux3Transformer.load_flux3_checkpoint(checkpoint)
+```
+
+作用：调用 `_flux3_state_dict()` 生成 TTNN 可用的 state dict，再通过 `cache.load_model()` 或等效加载路径把参数写入设备模型，并返回映射统计结果。
+
+所以两部分的区别是：
+
+| 部分 | 文件中的代码 | 解决的问题 |
+|---|---|---|
+| 第二步：Transformer 结构 | `Flux3ModeBlock`、`Flux3SingleBlock`、`Flux3Transformer.__init__` | TTNN 中有哪些层、层如何连接、每层有哪些算子 |
+| 第三步：DiT 权重映射 | `_block_state()`、`_flux3_state_dict()`、`load_flux3_checkpoint()` | safetensors 中的权重如何对应到这些 TTNN 层 |
 
 ### 实际结果
 
