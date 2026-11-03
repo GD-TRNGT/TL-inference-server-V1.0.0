@@ -20,6 +20,9 @@ ARG DEBIAN_FRONTEND=noninteractive
 # the exact local tt-metal commit at build time.
 # Example: --build-arg TT_METAL_COMMIT_SHA_OR_TAG=3c8681218b0951637991d20ce6b7e341df3b6879
 ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
+# FLUX.3 weights are intentionally not copied into the image. Mount the
+# model directory read-only at runtime, for example:
+#   -v /local/models/flux-3-image-klein-base:/local/models/flux-3-image-klein-base:ro
 
 # make build commit SHA available in the image for reference and debugging
 ENV TT_METAL_COMMIT_SHA_OR_TAG=${TT_METAL_COMMIT_SHA_OR_TAG}

@@ -911,3 +911,18 @@ TL-inference-server/main
 
 第一步不是立即改 API，而是确认 models.tt_dit 的实际源码、tt-metal commit 和 Docker 构建来源，然后在单个 Blackhole 芯片、固定输入下让 T2I pipeline 跑通。只有单芯片 pipeline 能独立产生正确结果，并且镜像内确认使用了该 tt-metal commit 后，再接入 tt-media-server；多芯片扩展另立阶段，问题定位最清晰。
 
+
+
+## 2026-11-03 实施状态修订
+
+| 项目 | 状态 | 证据 |
+|---|---|---|
+| 357 个 FLUX.3 DiT 源 tensor 的 key/shape 校验 | 已完成 | manifest 与 safetensors header |
+| 三组 5 个 mode block（txt/image/image_cond） | 已完成 | FULL_MAPPING_OK, mode_blocks=15 |
+| 28 个 single block | 已完成 | FULL_MAPPING_OK, single_blocks=28 |
+| Q/K/V、attn_out、SwiGLU FFN 权重映射 | 已完成 | 单芯片 TTNN 转换日志 |
+| 完整 T2I 端到端图片生成 | 未完成 | 文本编码器、scheduler、VAE 尚未串联 |
+
+下一步必须按“文本编码 → latent/patch/rope → denoise loop → VAE decode
+→ PNG → API runner”的顺序推进；不能把 transformer 权重映射通过当成端到端
+T2I 已完成。

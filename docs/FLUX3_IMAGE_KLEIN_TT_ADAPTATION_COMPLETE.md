@@ -337,3 +337,34 @@ tt-media-server API：未接入
 
 恢复开发时，从第 10 节开始即可。暂停不会删除当前分支、未提交代码、模型文件或文档。
 
+
+
+## 2026-11-03 实际验证更新
+
+### Transformer 完整权重映射
+
+已根据 /local/models/flux-3-image-klein-base/model.safetensors 的实际
+357 个 key/shape 实现逐块加载，不再只验证第一个 block。加载器使用
+safetensors.safe_open 按模块读取，避免额外 materialize 一份 11 GB 权重。
+
+验证使用 tl-inference-server:flux-3-image-klein-local-20261103，运行时只读
+挂载宿主机的 transformer_flux3.py 和模型目录；设备为 Blackhole Galaxy 的
+(1,1) mesh。最终日志：
+
+    FULL_MAPPING_OK {'source_tensors': 357, 'ttnn_parameter_entries': 271,
+                     'mode_blocks': 15, 'single_blocks': 28}
+
+这里的 15 个 mode block 是三组各 5 个：txt、image、image_cond；其中 T2I
+主路径使用 txt 和 image，image_cond 为参考图/条件图路径。每个 block 的
+Q/K/V 三个源权重在 TTNN 中合并为一个 to_qkv 参数，因此 357 个源 tensor
+对应 271 个 TTNN 参数条目。attn_out 已接入 attention 输出投影，single
+block 不再使用 pre_only=True。
+
+### 当前边界
+
+已完成：配置校验、单芯片设备初始化、所有 transformer 权重映射、三组 5/5
+mode block 和 28/28 single block 的 TTNN 权重转换。
+
+尚未完成：Qwen3-VL 在 TT 上的文本编码、scheduler/latent/denoise loop 的
+端到端串联、FLUX.3 VAE decode、图片输出和 /v1/images/generations 服务化。
+因此当前不能称为完整端到端 T2I 出图。
