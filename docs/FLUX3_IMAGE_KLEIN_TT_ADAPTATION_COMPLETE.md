@@ -466,8 +466,8 @@ Torch 等运行缓存统一放在宿主机 `/local/lnn/fluxcache`。容器启动
 
 ### 5. 当前验证边界
 
-截至本次改造，已完成缓存机制接入和镜像配置；待 v4 镜像完成 cold/warm 两次真实运行
-后补充具体 cache 命中日志和耗时对比。缓存机制本身不等于端到端出图，prompt/tokenizer、
+缓存机制接入、v4 镜像构建以及 cold/warm 两次真实运行均已完成，具体命中日志见后面的
+“v4 镜像及缓存真实验证”章节。缓存机制本身不等于端到端出图，prompt/tokenizer、
 scheduler、latent、patch/rope、denoise loop、VAE decode、PNG 输出和图像 API 仍未完成。
 
 ## 2026-11-03 v4 镜像及缓存真实验证
@@ -480,6 +480,9 @@ image_id: sha256:cd2badff9ea0d87fb3722c52261a795dfa2150955fb28d3ef981de1c43ac92b
 size: 8,298,064,005 bytes（约 8.30 GB）
 tt-metal: 23ef0fd19b
 build source: /local/lnn/TL-inference-server + /local/lnn/tt-metal
+final tt-metal commit: 91d937c036
+final TL-inference-server commit: 2e547af004
+host cache size after validation: approximately 19G
 ```
 
 模型权重仍未复制进镜像，运行时挂载：
