@@ -926,3 +926,13 @@ TL-inference-server/main
 下一步必须按“文本编码 → latent/patch/rope → denoise loop → VAE decode
 → PNG → API runner”的顺序推进；不能把 transformer 权重映射通过当成端到端
 T2I 已完成。
+
+
+## 2026-11-03 T2I pipeline 组件映射验证结果
+
+| 组件 | 状态 | 实际证据 |
+|---|---|---|
+| Flux3 DiT | 已完成 | 357/357 源张量，15 mode block，28 single block |
+| Qwen3-VL 文本编码器 | 已完成 | 36 层及 8 个配置激活层在单芯片加载通过 |
+| Flux3 VAE decoder | 已完成 | 251 个 safetensors 源张量加载通过 |
+| 端到端 T2I 运行 | 未完成 | 尚未串联 prompt、scheduler、denoise 和输出 API |

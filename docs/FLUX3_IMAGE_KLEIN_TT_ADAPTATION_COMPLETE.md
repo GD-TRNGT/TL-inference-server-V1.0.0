@@ -368,3 +368,25 @@ mode block 和 28/28 single block 的 TTNN 权重转换。
 尚未完成：Qwen3-VL 在 TT 上的文本编码、scheduler/latent/denoise loop 的
 端到端串联、FLUX.3 VAE decode、图片输出和 /v1/images/generations 服务化。
 因此当前不能称为完整端到端 T2I 出图。
+
+
+## 2026-11-03 T2I pipeline 组件权重映射更新
+
+在 Transformer 全量映射之外，已补齐并实测两个 pipeline 组件：
+
+| 组件 | 实际实现/权重 | 实测结果 |
+|---|---|---|
+| Qwen3-VL text encoder | `text_encoder/model-*.safetensors`，36 层，使用配置中的 8 个激活层 | `TEXT_ENCODER_MAPPING_OK 36 (4, 8, 12, 16, 20, 24, 28, 32)` |
+| FLUX3 VAE decoder | `vae/diffusion_pytorch_model.safetensors` | `VAE_MAPPING_OK {'source_tensors': 251}` |
+| FLUX3 DiT transformer | `model.safetensors` | `FULL_MAPPING_OK {'source_tensors': 357, ...}` |
+
+新增 `pipelines/flux3/flux3_components.py`，并在 `pipeline_flux3.py` 中提供：
+
+- `create_text_encoder()`；
+- `create_vae_decoder()`；
+- `load_vae_weights()`；
+- `load_transformer_weights()`。
+
+因此完整 T2I pipeline 的模型组件权重已经可以分别映射到 TT-NN。当前仍未宣称
+端到端出图完成：prompt processor/tokenizer、时间步/latent/patch/rope、scheduler
+denoise loop、VAE decode 和 server API 的串联仍需下一步验证。
