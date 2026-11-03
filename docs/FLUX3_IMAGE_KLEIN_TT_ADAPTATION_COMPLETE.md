@@ -526,6 +526,145 @@ host cache size after validation: approximately 19G
 /local/lnn/fluxcache/logs/flux3-v4-vae-warm.log
 ```
 
+## 2026-11-03 实现步骤与每一步的作用
+
+下面是本次适配实际执行的顺序。每一步解决一个独立问题，只有前一步完成后，后一步
+才有可靠的验证基础。
+
+### 第 1 步：确认模型资产和硬件
+
+读取 `/local/models/flux-3-image-klein-base` 下的 `config.json`、`manifest.json`、
+DiT、text encoder 和 VAE 权重文件，并确认 10.12.11.2 是 32 芯片 Blackhole Galaxy。
+
+作用：确认模型结构、权重 key/shape 和目标硬件，避免把 FLUX.2 的结构或错误权重
+映射到 FLUX.3。
+
+### 第 2 步：定义 FLUX.3 的 TT-NN 模型结构
+
+在 `tt-metal/models/tt_dit/models/transformers/transformer_flux3.py` 中实现：
+
+1. `Flux3ModeBlock`：处理 text/image/image_cond 三种内容流；
+2. `Flux3SingleBlock`：处理拼接后的 joint token 流；
+3. `Flux3Transformer`：负责输入投影、block 堆叠、调制和输出投影。
+
+作用：把 PyTorch/参考实现中的 FLUX.3 Transformer 结构转换成 TT-NN 可执行模块，
+但此阶段主要先保证模块结构和权重接口正确，并不代表完整 denoise 已经串通。
+
+### 第 3 步：建立权重映射
+
+从 safetensors 中读取真实权重 key，并映射到 TT-NN module state：
+
+```text
+357 个源 tensor
+15 个 mode block：txt/image/image_cond 各 5 个
+28 个 single block
+271 个 TTNN 参数条目
+```
+
+Q、K、V 源权重在 TT-NN 中按模块要求合并为 `to_qkv`，SwiGLU 权重按 TT-NN
+线性层布局转换，attention 输出投影和 modulation 权重也分别映射。
+
+作用：先解决“权重能否完整进入 TT 设备”的问题，为后续算子执行和精度对齐提供
+正确参数。
+
+### 第 4 步：接入 Text Encoder 和 VAE 组件
+
+在 `pipelines/flux3/flux3_components.py` 中建立：
+
+- Qwen3-VL text encoder 的构建和权重加载；
+- FLUX.3 VAE decoder 的构建和权重加载。
+
+在 `pipeline_flux3.py` 中提供统一的组件创建入口和 parallel config 传递。
+
+作用：将 DiT 之外的模型组件纳入同一个 T2I pipeline，为后续
+`prompt → text embedding → denoise → VAE decode` 串联做准备。
+
+### 第 5 步：接入持久化 TTNN 权重缓存
+
+DiT、text encoder 和 VAE 都通过 `cache.load_model()` 加载：
+
+1. 首次运行读取 safetensors；
+2. 转换为 TTNN tensor 并写入 `cache_dict.json` 和 `.tensorbin`；
+3. 后续相同 mesh、dtype 和 parallel config 直接读取缓存。
+
+作用：避免每次重启容器都重新转换几十 GB 权重，并确保不同 mesh/并行配置不会错误
+复用不匹配的缓存。
+
+### 第 6 步：修改 Dockerfile 和运行时目录
+
+在 `tt-media-server/Dockerfile` 中把以下缓存统一指向容器内 `/local/fluxcache`：
+
+```text
+TT_METAL_CACHE
+TT_METAL_KERNEL_CACHE_PATH
+TT_DIT_CACHE_DIR
+HF_HOME
+TORCH_HOME
+XDG_CACHE_HOME
+TMPDIR
+```
+
+运行时把宿主机目录映射为：
+
+```text
+/local/lnn/fluxcache:/local/fluxcache
+```
+
+并设置 `CACHE_ROOT=/local/fluxcache`，让 entrypoint 自动处理挂载目录权限。
+
+作用：容器销毁后仍保留权重转换结果、JIT kernel、Hugging Face 和临时缓存。
+
+### 第 7 步：使用本地两个仓库构建镜像
+
+通过 BuildKit 的本地 build context 将 `/local/lnn/tt-metal` 注入
+`TL-inference-server` 镜像，而不是重新 clone 远程仓库：
+
+```text
+--build-context tt-metal-local=/local/lnn/tt-metal
+--build-arg TT_METAL_COMMIT_SHA_OR_TAG=23ef0fd19b
+```
+
+作用：保证镜像中的 TT-Metal 代码就是本次验证过的本地版本；模型权重不复制进镜像，
+仍由运行时只读挂载。
+
+### 第 8 步：在真实单芯片设备上做 cold run
+
+使用 v4 镜像、Blackhole 物理芯片 0 和 `(1,1)` mesh，依次执行 DiT、text encoder
+和 VAE 权重加载。
+
+作用：验证设备初始化、TTNN 参数转换、kernel 编译、权重写入和缓存写入全部能在
+真实硬件上完成，而不是只在 Python import 层面通过。
+
+### 第 9 步：重复执行 warm run
+
+使用完全相同的模型、mesh、dtype 和 parallel config 再执行一次，检查日志中的：
+
+```text
+loading cache at ...
+1 HIT / 0 MISS
+JIT cache hits
+```
+
+作用：证明缓存路径、缓存 key、文件权限和实际复用都正确，而不是只有“缓存目录存在”。
+
+### 第 10 步：明确当前边界
+
+当前已经完成的是：
+
+```text
+FLUX.3 DiT/Text Encoder/VAE 的单芯片 TTNN 权重映射和缓存复用
+```
+
+当前还没有完成：
+
+```text
+完整 prompt/tokenizer、latent 初始化、scheduler、denoise loop、VAE decode、
+PNG 输出、tt-media-server runner/API、2/4 芯片并行和精度对齐
+```
+
+作用：区分“模型组件加载成功”和“端到端 T2I 推理成功”，避免把权重映射结果误写成
+完整模型服务已经完成。
+
 本次验证证明的是“模型组件权重转换和缓存可复用”，不是端到端 T2I 出图。日志中的
 `No Physical Grouping Descriptor`、`TT_CLUSTER_NAME not set` 和 shared-memory warning
 未阻止单芯片 `(1,1)` 映射通过，但多芯片运行前仍应补齐相应部署配置。
