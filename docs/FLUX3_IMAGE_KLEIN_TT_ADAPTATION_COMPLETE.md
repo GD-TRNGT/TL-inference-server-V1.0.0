@@ -415,7 +415,55 @@ Flux3T2IPipeline.create_transformer()
 
 **pipeline 外壳和组件创建入口已完成；端到端执行未完成。**
 
-## 8. 第七步：实现持久化权重和 JIT 缓存
+## 8. 第七步：实现 T2I 采样基础模块
+
+### 实现文件
+
+```text
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/sampling.py
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py
+```
+
+### 做了什么
+
+1. `make_noise_latents()`：根据 seed 生成可复现的 NCHW Gaussian latent，默认 latent channel 为 32。
+2. `patchify_latents()`：将 `[N, 32, H, W]` 转为 `[N, (H/2)*(W/2), 128]` 的 FLUX.3 image tokens。
+3. `unpatchify_latents()`：将 image tokens 恢复为 VAE 需要的 NCHW latent。
+4. `make_flow_schedule()`：生成初版 flow-matching sigma/timestep 序列。
+5. `sinusoidal_time_embedding()`：生成 `Flux3TimeIn` 所需的 256 维时间输入。
+6. `euler_flow_step()`：实现单步 `latent + model_output * (sigma_next - sigma_current)` 更新。
+7. 在 `Flux3T2IPipeline` 中增加 `initialize_latents()`、`patchify()`、`unpatchify()`、`prepare_schedule()`、`time_embedding()` 和 `euler_step()` 入口。
+
+### 验证
+
+```text
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/test_sampling.py
+```
+
+容器内验证结果：
+
+```text
+FLUX3_SAMPLING_TEST_OK
+```
+
+已验证 seed 可复现、patchify/unpatchify 可逆、schedule 长度正确、256 维时间 embedding 形状正确以及 Euler 更新方向正确。
+
+### 当前边界
+
+这是采样基础模块的第一版，已经完成张量形状和基础数学运算，但还没有完成：
+
+```text
+FLUX.3 参考实现的精确 scheduler 参数对齐
+RoPE 生成和 TTNN device tensor 转换
+prompt_embeds 到 TTNN Transformer.forward() 的完整调用
+denoise loop 的真实设备执行
+```
+
+### 状态
+
+**latent 初始化、patchify/unpatchify、初版 schedule、time embedding 和 Euler 更新已实现；真实 denoise loop 未实现。**
+
+## 9. 第八步：实现持久化权重和 JIT 缓存
 
 ### 修改位置
 
@@ -496,7 +544,7 @@ JIT cache：6/6 hits
 
 **已完成并在真实设备上验证。**
 
-## 9. 第八步：修改 Dockerfile 并使用本地仓库构建镜像
+## 10. 第九步：修改 Dockerfile 并使用本地仓库构建镜像
 
 ### 修改位置
 
@@ -552,7 +600,7 @@ docker buildx build \
 
 **本地源码镜像已构建。**镜像只验证模型组件加载和缓存路径，不代表 server 已经提供 FLUX.3 T2I API。
 
-## 10. 第九步：真实 Blackhole 单芯片验证
+## 11. 第十步：真实 Blackhole 单芯片验证
 
 ### 执行脚本
 
@@ -597,7 +645,7 @@ cold/warm cache：通过
 
 **单芯片模型组件加载验证已完成。**
 
-## 11. FLUX.3 完整实现内容和状态
+## 12. FLUX.3 完整实现内容和状态
 
 本节作为后续持续更新的状态清单。每完成一项，只修改对应行的状态和验证说明：
 
@@ -616,13 +664,14 @@ cold/warm cache：通过
 | Qwen3-VL TTNN 前向和 prompt embedding 输出 | 未串联 | 组件和权重已加载，但还没有接入 T2I 执行链 |
 | FLUX.3 VAE Decoder 结构和权重映射 | 已实现 | `build_flux3_vae_decoder()`、`load_flux3_vae_weights()` 已完成，251 source tensors |
 | VAE decode 执行 | 未串联 | 还需要将 denoised latent 接入 VAE 前向 |
-| latent 初始化 | 未实现 | 还需要按 seed 生成 Gaussian latent，并固定形状和 dtype |
-| patchify/unpatchify | 未实现 | 还需要实现 latent 网格与 Transformer token 的转换 |
-| RoPE/time embedding | 未串联 | 还需要把位置编码和时间条件接入实际 forward |
-| scheduler | 未实现 | 还需要实现 flow-matching 的 timestep、sigma 和更新规则 |
+| latent 初始化 | 已实现 | `sampling.py:make_noise_latents()` 已按 seed 生成 32 通道 NCHW latent |
+| patchify/unpatchify | 已实现 | `patchify_latents()` 和 `unpatchify_latents()` 已通过可逆性测试 |
+| RoPE/time embedding | 未串联 | 256 维 sinusoidal time embedding 已实现；RoPE 生成和 TTNN forward 接入仍未完成 |
+| scheduler | 已实现（初版） | 已生成基础 sigma/timestep 序列；参考实现精确参数对齐尚未完成 |
 | denoise loop | 未实现 | 还需要执行完整 steps，并调用 Transformer 实际前向 |
 | 图片 tensor 到 PNG/JPEG | 未实现 | 还需要完成图像后处理和文件输出 |
 | T2I pipeline 外壳和请求校验 | 已实现 | `pipeline_flux3.py`、`t2i_contract.py` 已完成基础边界和参数校验 |
+| T2I 采样基础模块 | 已实现（初版） | `sampling.py` 已完成 latent、patchify/unpatchify、初版 schedule、time embedding 和 Euler step；参考实现对齐及设备串联仍待完成 |
 | 持久化 TTNN 权重缓存 | 已实现 | `cache.load_model()` 已接入 DiT、Text Encoder 和 VAE |
 | TT-Metal/JIT 缓存 | 已实现 | `/local/lnn/fluxcache` 已完成挂载和 cold/warm 验证 |
 | 本地源码 Docker 镜像 | 已实现 | 已使用本地 `TL-inference-server` 和 `tt-metal` 构建 v4 镜像 |
@@ -635,13 +684,13 @@ cold/warm cache：通过
 | 精度对齐 | 未开始 | 还需要与参考实现逐层比较 embedding、block、latent 和最终图片 |
 | 性能优化 | 未开始 | 还需要优化 kernel、memory、layout、trace、并发和吞吐 |
 
-## 12. 当前准确结论
+## 13. 当前准确结论
 
 因此，当前成果应准确描述为：
 
 > 已完成 FLUX.3 模型组件在 TTNN 上的单芯片权重映射、真实设备加载和持久化缓存验证；尚未完成可对外提供图片生成服务的端到端 FLUX.3 推理实现。
 
-## 13. 相关验证日志和提交
+## 14. 相关验证日志和提交
 
 缓存和验证日志位于：
 
