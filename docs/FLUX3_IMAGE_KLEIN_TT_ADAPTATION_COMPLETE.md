@@ -597,57 +597,45 @@ cold/warm cache：通过
 
 **单芯片模型组件加载验证已完成。**
 
-## 11. 当前未实现部分
+## 11. FLUX.3 完整实现内容和状态
 
-以下内容不能写成“已完成”，是下一阶段工作：
+本节作为后续持续更新的状态清单。每完成一项，只修改对应行的状态和验证说明：
 
-| 部分 | 当前状态 | 需要完成的内容 |
+| 实现内容 | 状态 | 当前实现或下一步工作 |
 |---|---|---|
-| tokenizer/processor | 未实现 | 将 prompt 转为 Qwen3-VL 输入并生成文本条件 |
-| Text Encoder 前向 | 未串联 | 在 TTNN 上执行 prompt 编码并输出 20480 维条件 |
-| latent 初始化 | 未实现 | 按 seed 生成 Gaussian latent，并固定形状和 dtype |
-| patchify/unpatchify | 未实现 | 在 latent 网格和 Transformer token 之间转换 |
-| RoPE/time embedding | 未串联 | 生成位置编码和时间条件 |
-| scheduler | 未实现 | 实现 flow-matching 的 timestep、sigma 和更新规则 |
-| denoise loop | 未实现 | 执行全部 steps，并调用 5+28 个 block 的实际前向 |
-| VAE decode 串联 | 未实现 | 将最终 latent 传入 VAE 并得到图像 tensor |
-| 图片输出 | 未实现 | 将图像 tensor 转为 PNG/JPEG |
-| tt-media-server runner | 未接入 | 增加 FLUX.3 runner、runner 注册和模型配置 |
-| HTTP API | 未接入 | 增加 `/v1/images/generations` 及请求参数映射 |
-| 同步/异步任务 | 未接入 | 接入 server 的同步、异步队列和任务状态 |
-| cancel | 未接入 | 增加任务取消语义并处理中断状态 |
-| 2 芯片/4 芯片 | 未实现 | mesh、权重分片、通信和多芯片缓存验证 |
-| 精度对齐 | 未开始 | 与参考实现逐层比较 embedding、block、latent 和最终图片 |
-| 性能优化 | 未开始 | kernel、memory、layout、trace、并发和吞吐优化 |
+| 模型目录、`config.json`、`manifest.json` 校验 | 已实现 | `flux3_config.py:validate_checkpoint()` 已完成，并在 pipeline 初始化时调用 |
+| FLUX.3 TTNN Transformer 结构 | 已实现 | `transformer_flux3.py` 中的 `Flux3TimeIn`、`Flux3ModeBlock`、`Flux3SingleBlock`、`Flux3Transformer` 已完成 |
+| 15 个 mode block 结构 | 已实现 | text/image/image_condition 三组各 5 个 block 已创建 |
+| 28 个 single block 结构 | 已实现 | `Flux3Transformer.__init__()` 创建，`forward()` 中执行 |
+| DiT safetensors 权重读取 | 已实现 | `Flux3Transformer._flux3_state_dict()` 使用 safetensors 读取并组织 state dict |
+| DiT block 权重映射 | 已实现 | `_block_state()`、`_flux3_state_dict()`、`load_flux3_checkpoint()` 已完成 |
+| Q/K/V 合并和 SwiGLU 权重布局转换 | 已实现 | 已转换为 TTNN attention 和线性层所需布局 |
+| DiT 完整映射验证 | 已实现 | `flux3_full_mapping_test.py`，结果为 357 source tensors、271 TTNN entries |
+| Qwen3-VL Text Encoder 结构和权重映射 | 已实现 | `flux3_components.py` 和 `flux3_text_mapping_test.py` 已完成，36 层、326 个 TTNN tensor |
+| Qwen3-VL tokenizer/processor | 未实现 | 还需要将 prompt 转换为 Qwen3-VL 输入 |
+| Qwen3-VL TTNN 前向和 prompt embedding 输出 | 未串联 | 组件和权重已加载，但还没有接入 T2I 执行链 |
+| FLUX.3 VAE Decoder 结构和权重映射 | 已实现 | `build_flux3_vae_decoder()`、`load_flux3_vae_weights()` 已完成，251 source tensors |
+| VAE decode 执行 | 未串联 | 还需要将 denoised latent 接入 VAE 前向 |
+| latent 初始化 | 未实现 | 还需要按 seed 生成 Gaussian latent，并固定形状和 dtype |
+| patchify/unpatchify | 未实现 | 还需要实现 latent 网格与 Transformer token 的转换 |
+| RoPE/time embedding | 未串联 | 还需要把位置编码和时间条件接入实际 forward |
+| scheduler | 未实现 | 还需要实现 flow-matching 的 timestep、sigma 和更新规则 |
+| denoise loop | 未实现 | 还需要执行完整 steps，并调用 Transformer 实际前向 |
+| 图片 tensor 到 PNG/JPEG | 未实现 | 还需要完成图像后处理和文件输出 |
+| T2I pipeline 外壳和请求校验 | 已实现 | `pipeline_flux3.py`、`t2i_contract.py` 已完成基础边界和参数校验 |
+| 持久化 TTNN 权重缓存 | 已实现 | `cache.load_model()` 已接入 DiT、Text Encoder 和 VAE |
+| TT-Metal/JIT 缓存 | 已实现 | `/local/lnn/fluxcache` 已完成挂载和 cold/warm 验证 |
+| 本地源码 Docker 镜像 | 已实现 | 已使用本地 `TL-inference-server` 和 `tt-metal` 构建 v4 镜像 |
+| 单芯片 Blackhole 真实设备验证 | 已实现 | `(1,1)` mesh、物理芯片 0 的映射和缓存复用已通过 |
+| tt-media-server FLUX.3 runner | 未实现 | 还需要实现 runner、注册、模型配置和生命周期接入 |
+| FLUX.3 HTTP API | 未实现 | 还需要增加 `/v1/images/generations` 及参数映射 |
+| 同步/异步任务 | 未实现 | 还需要接入服务队列、任务状态和结果返回 |
+| cancel | 未实现 | 还需要实现取消语义、执行中断和状态清理 |
+| 2 芯片/4 芯片并行 | 未实现 | 还需要完成 mesh、权重分片、通信和多芯片缓存验证 |
+| 精度对齐 | 未开始 | 还需要与参考实现逐层比较 embedding、block、latent 和最终图片 |
+| 性能优化 | 未开始 | 还需要优化 kernel、memory、layout、trace、并发和吞吐 |
 
 ## 12. 当前准确结论
-
-### 已实现
-
-```text
-FLUX.3 配置和 manifest 校验
-FLUX.3 TTNN Transformer 结构
-15 个 mode block 的结构和权重映射
-28 个 single block 的结构和权重映射
-357 个 DiT source tensor 的完整映射
-Qwen3-VL Text Encoder 权重映射
-FLUX.3 VAE 权重映射
-单芯片 Blackhole 真实设备加载
-权重 cache 和 JIT cache 持久化
-本地 TL-inference-server + tt-metal 镜像构建
-```
-
-### 尚未实现
-
-```text
-完整 prompt 到图片的 T2I 执行链
-真实 denoise loop
-VAE decode 与 PNG 输出串联
-tt-media-server runner/API
-同步、异步和 cancel 接口
-2 芯片和 4 芯片运行
-精度对齐和性能优化
-```
 
 因此，当前成果应准确描述为：
 
