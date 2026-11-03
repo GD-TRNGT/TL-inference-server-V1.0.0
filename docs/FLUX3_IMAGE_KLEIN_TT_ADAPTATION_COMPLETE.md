@@ -57,6 +57,30 @@ dtype：BF16
 3. 检查 DiT、Qwen3-VL 和 VAE 的 safetensors 文件及 tensor key。
 4. 先把目标限制为单芯片、BF16、batch=1 的 T2I bring-up。
 
+### 代码和执行入口
+
+这一步由以下代码负责，不是人工查看文件后直接写结论：
+
+```text
+实现文件：
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_config.py
+
+pipeline 调用入口：
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py
+```
+
+`flux3_config.py` 中的 `validate_checkpoint()` 读取 `config.json` 和 `manifest.json`，检查模型名、导出类型、dtype、关键结构参数和权重文件是否存在，并返回 `Flux3Config`。`Flux3T2IPipeline.__init__()` 调用这个函数，把结果保存到 `self.config`。
+
+实际验证入口为：
+
+```text
+/local/lnn/flux3_full_mapping_test.py
+/local/lnn/flux3_text_mapping_test.py
+/local/lnn/flux3_vae_mapping_test.py
+```
+
+这三个脚本都会使用 `/local/models/flux-3-image-klein-base`，分别触发 DiT、Text Encoder 和 VAE 的构建，从而验证模型目录布局和配置是否满足实现边界。模型权重不是在 server 仓库中生成的，而是通过运行时只读挂载进入容器。
+
 ### 作用
 
 这一步用来确定真实权重和真实硬件配置，避免直接复用 FLUX.2 的结构或把“能读取文件”误认为“模型已经适配”。先固定单芯片也便于定位结构、权重和算子问题。
@@ -71,6 +95,23 @@ dtype：BF16
 
 ```text
 /local/lnn/tt-metal/models/tt_dit/models/transformers/transformer_flux3.py
+```
+
+### 执行入口
+
+实际验证不是只 import 这个文件，而是由下面的脚本实例化 `Flux3Transformer` 并调用 `load_flux3_checkpoint()`：
+
+```text
+/local/lnn/flux3_full_mapping_test.py
+```
+
+调用关系：
+
+```text
+flux3_full_mapping_test.py
+  -> Flux3Transformer(...)
+  -> model.load_flux3_checkpoint(model.safetensors)
+  -> transformer_flux3.py 中的权重映射和 TTNN 参数写入
 ```
 
 ### 做了什么
@@ -112,6 +153,29 @@ T2I 主路径主要使用 text 和 image 两组 mode block；`image_condition` �
 
 ## 4. 第三步：实现 DiT 权重映射
 
+### 实现和执行位置
+
+实现文件：
+
+```text
+/local/lnn/tt-metal/models/tt_dit/models/transformers/transformer_flux3.py
+```
+
+验证脚本：
+
+```text
+/local/lnn/flux3_full_mapping_test.py
+```
+
+脚本中的核心调用是：
+
+```python
+model = Flux3Transformer(...)
+report = model.load_flux3_checkpoint(
+    "/local/models/flux-3-image-klein-base/model.safetensors"
+)
+```
+
 ### 做了什么
 
 1. 使用 safetensors 读取真实 `model.safetensors` 的 key 和 shape。
@@ -150,6 +214,31 @@ single blocks：28
 /local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py
 ```
 
+### 执行入口
+
+组件构建和权重加载实现位于：
+
+```text
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_components.py
+```
+
+实际验证脚本：
+
+```text
+/local/lnn/flux3_text_mapping_test.py
+```
+
+调用关系：
+
+```text
+flux3_text_mapping_test.py
+  -> build_flux3_text_encoder(...)
+  -> flux3_components.py 读取 text_encoder/config.json 和 manifest.json
+  -> load_flux3_text_state_dict(...)
+  -> cache.load_model(...)
+  -> Qwen3VlTextEncoder
+```
+
 ### 做了什么
 
 1. 增加 Qwen3-VL Text Encoder 的构建入口。
@@ -184,6 +273,30 @@ encoder layers：36
 4. 在 `pipeline_flux3.py` 中增加 `create_vae_decoder()` 和 `load_vae_weights()`。
 5. 显式传入 device 和 parallel config，保证 VAE 缓存 key 与实际设备配置一致。
 
+### 执行入口
+
+实现文件：
+
+```text
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_components.py
+```
+
+实际验证脚本：
+
+```text
+/local/lnn/flux3_vae_mapping_test.py
+```
+
+调用关系：
+
+```text
+flux3_vae_mapping_test.py
+  -> build_flux3_vae_decoder(...)
+  -> load_flux3_vae_weights(...)
+  -> 读取 vae/diffusion_pytorch_model.safetensors
+  -> decoder.load_torch_state_dict(..., strict=True)
+```
+
 ### 实际结果
 
 ```text
@@ -217,6 +330,29 @@ VAE source tensors：251
 4. 固定首版请求边界：单 prompt、单输出、batch=1、BF16、固定 seed/steps/guidance、默认 1024×1024。
 5. 对尚未实现的执行链路明确报出未完成，而不是伪装成已经生成图片。
 
+### 执行入口
+
+```text
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/t2i_contract.py
+```
+
+调用关系：
+
+```text
+Flux3T2IPipeline.__init__()
+  -> validate_checkpoint()
+  -> Flux3Config
+
+Flux3T2IPipeline.prepare_request()
+  -> Flux3T2IRequest.validate()
+
+Flux3T2IPipeline.create_transformer()
+  -> Flux3Transformer
+```
+
+当前 `pipeline.run()` 只到组件创建和请求边界检查，尚未进入完整采样执行；这是文档标记“端到端执行未完成”的直接代码依据。
+
 ### 作用
 
 把三个模型组件放到同一个 T2I 入口下，为后续逐步填入预处理、采样和解码逻辑提供稳定边界。
@@ -234,6 +370,25 @@ VAE source tensors：251
 /local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_components.py
 /local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py
 ```
+
+### 实现位置和验证入口
+
+缓存实现分布在：
+
+```text
+/local/lnn/tt-metal/models/tt_dit/models/transformers/transformer_flux3.py
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_components.py
+```
+
+关键调用是 `cache.load_model(...)`。验证仍使用三个真实设备加载脚本：
+
+```text
+/local/lnn/flux3_full_mapping_test.py
+/local/lnn/flux3_text_mapping_test.py
+/local/lnn/flux3_vae_mapping_test.py
+```
+
+第一次运行触发 safetensors 到 TTNN 的转换和 kernel 编译；第二次在相同 mesh、dtype 和 parallel config 下再次运行同一个脚本，检查日志中的 `HIT` 和 `JIT cache hits`。
 
 ### 做了什么
 
@@ -295,6 +450,24 @@ JIT cache：6/6 hits
 /local/lnn/TL-inference-server/tt-media-server/Dockerfile
 ```
 
+### 执行命令
+
+实际构建使用本地两个仓库作为源码输入：
+
+```bash
+cd /local/lnn/TL-inference-server
+
+docker buildx build \
+  --load \
+  --build-context tt-metal-local=/local/lnn/tt-metal \
+  --build-arg TT_METAL_COMMIT_SHA_OR_TAG=23ef0fd19b \
+  -f tt-media-server/Dockerfile \
+  -t tl-inference-server:flux-3-image-klein-local-20261103-v4 \
+  .
+```
+
+这里的 `--build-context tt-metal-local` 决定镜像使用 `/local/lnn/tt-metal` 的本地代码；模型目录没有放入镜像，而是在容器启动时挂载。
+
 ### 做了什么
 
 1. 使用 BuildKit 的 `--build-context` 把本地 `/local/lnn/tt-metal` 作为构建上下文传入。
@@ -326,6 +499,18 @@ JIT cache：6/6 hits
 **本地源码镜像已构建。**镜像只验证模型组件加载和缓存路径，不代表 server 已经提供 FLUX.3 T2I API。
 
 ## 10. 第九步：真实 Blackhole 单芯片验证
+
+### 执行脚本
+
+容器内执行的三个验证入口分别是：
+
+```text
+/local/lnn/flux3_full_mapping_test.py
+/local/lnn/flux3_text_mapping_test.py
+/local/lnn/flux3_vae_mapping_test.py
+```
+
+它们不是模拟测试：每个脚本都调用 `ttnn.open_mesh_device(ttnn.MeshShape(1, 1))`，创建真实 TTNN 设备，完成后调用 `ttnn.close_device(device)`。
 
 ### 验证方法
 
