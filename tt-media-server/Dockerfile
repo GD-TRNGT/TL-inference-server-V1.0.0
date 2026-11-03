@@ -287,6 +287,7 @@ ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
 ARG CONTAINER_APP_UID=1000
 ARG CONTAINER_APP_USERNAME=container_app_user
 ARG HOME_DIR=/home/${CONTAINER_APP_USERNAME}
+ARG FLUXCACHE_DIR=/local/fluxcache
 
 ENV TT_METAL_COMMIT_SHA_OR_TAG=${TT_METAL_COMMIT_SHA_OR_TAG} \
     ENVIRONMENT=development \
@@ -304,6 +305,24 @@ ENV TT_METAL_COMMIT_SHA_OR_TAG=${TT_METAL_COMMIT_SHA_OR_TAG} \
     LD_LIBRARY_PATH=${HOME_DIR}/tt-metal/build/lib \
     VLLM_USE_V1=1 \
     TT_METAL_LOGS_PATH=${HOME_DIR}/logs
+
+# Persistent host-mounted cache root for FLUX.3. Mount
+# /local/lnn/fluxcache:/local/fluxcache at runtime. This keeps JIT kernels,
+# TT-DiT converted weights, HF/PyTorch caches and temporary compiler files out
+# of the container writable layer.
+ENV FLUXCACHE_DIR=${FLUXCACHE_DIR} \
+    TT_METAL_CACHE=${FLUXCACHE_DIR}/tt-metal-cache \
+    TT_METAL_KERNEL_CACHE_PATH=${FLUXCACHE_DIR}/tt-metal-cache \
+    TT_DIT_CACHE_DIR=${FLUXCACHE_DIR}/tt_dit_cache \
+    XDG_CACHE_HOME=${FLUXCACHE_DIR}/xdg \
+    HF_HOME=${FLUXCACHE_DIR}/hf \
+    HF_HUB_CACHE=${FLUXCACHE_DIR}/hf/hub \
+    HUGGINGFACE_HUB_CACHE=${FLUXCACHE_DIR}/hf/hub \
+    TRANSFORMERS_CACHE=${FLUXCACHE_DIR}/hf/transformers \
+    TORCH_HOME=${FLUXCACHE_DIR}/torch \
+    TRITON_CACHE_DIR=${FLUXCACHE_DIR}/triton \
+    MPLCONFIGDIR=${FLUXCACHE_DIR}/mpl \
+    TMPDIR=${FLUXCACHE_DIR}/tmp
 
 # Install runtime dependencies
 # These packages are required for the application to run in production

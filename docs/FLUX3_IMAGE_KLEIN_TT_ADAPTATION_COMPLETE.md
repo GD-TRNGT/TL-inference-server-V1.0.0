@@ -389,6 +389,127 @@ VAE_MAPPING_V3_OK {'source_tensors': 251}
 三次容器运行均记录 `STATUS=0`。其中 Qwen3-VL 实际转换 326 个 TTNN tensor，
 VAE 实际转换 168 个 TTNN tensor；源文件 tensor 数量分别按模型文件统计。
 
+## 2026-11-03 持久化缓存改造
+
+### 1. 目标
+
+将模型权重转换结果、TT-Metal/TTNN kernel 编译结果以及 Python/Hugging Face/
+Torch 等运行缓存统一放在宿主机 `/local/lnn/fluxcache`。容器启动时把该目录挂载为
+`/local/fluxcache`，这样删除或重建容器不会丢失已转换的权重和已编译 kernel。
+
+### 2. 代码改动
+
+1. `tt-metal/models/tt_dit/models/transformers/transformer_flux3.py`
+   - 保存 `parallel_config`；
+   - 将 357 个 FLUX.3 DiT 源 tensor 组织成 TTNN state dict；
+   - 使用 `cache.load_model(model_name="flux-3-image-klein", subfolder="transformer")`；
+   - 首次运行从 safetensors 转换并写 cache，后续运行直接 `Module.load()`。
+2. `tt-metal/models/tt_dit/pipelines/flux3/flux3_components.py`
+   - VAE decoder 保存 device 和 parallel config；
+   - 使用 `cache.load_model(model_name="flux-3-image-klein", subfolder="vae")`。
+3. `tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py`
+   - `create_vae_decoder()` 支持传入显式 parallel config，保证缓存 key 与设备配置一致。
+4. `TL-inference-server/tt-media-server/Dockerfile`
+   - 增加 `FLUXCACHE_DIR=/local/fluxcache`；
+   - 设置 `TT_DIT_CACHE_DIR`、`TT_METAL_CACHE`、`TT_METAL_KERNEL_CACHE_PATH`、
+     `HF_HOME`、`TORCH_HOME`、`XDG_CACHE_HOME`、`TMPDIR` 等环境变量指向该根目录。
+
+### 3. 宿主机目录布局
+
+```text
+/local/lnn/fluxcache/
+├── tt-metal-cache/   # TT-Metal kernel/JIT 编译缓存
+├── tt_dit_cache/     # TTNN 转换后的 transformer、VAE、text_encoder 权重
+├── hf/               # Hugging Face 下载缓存
+├── torch/            # PyTorch 缓存
+├── xdg/              # XDG 通用缓存
+├── triton/           # Triton 缓存（如使用）
+├── mpl/              # Matplotlib 缓存
+├── tmp/              # 运行时临时文件
+├── logs/             # 验证日志
+└── outputs/          # 输出图片/结果
+```
+
+`TT_DIT_CACHE_DIR` 的实际目录还会按并行配置、mesh shape 和 dtype 自动展开，不能
+手工把不同 mesh 的缓存混在一起。例如单芯片缓存会位于类似：
+
+```text
+/local/lnn/fluxcache/tt_dit_cache/flux-3-image-klein/transformer/<parallel>mesh1x1_bf16/
+/local/lnn/fluxcache/tt_dit_cache/flux-3-image-klein/vae/<parallel>mesh1x1_bf16/
+```
+
+### 4. 首次运行与后续运行
+
+- cold run：没有 `cache_dict.json` 时读取模型 safetensors，执行权重转换、设备写入、
+  TTNN/TT-Metal kernel 编译并将结果写入 `/local/lnn/fluxcache`。
+- warm run：相同模型、相同 parallel config、相同 mesh 和 dtype 下，日志应出现
+  `loading cache at ...`，直接读取 `.tensorbin`；kernel 也从 `tt-metal-cache` 复用。
+- 如果修改模型权重、模型结构、mesh 或并行配置，应使用新的 cache 子目录或清理对应
+  子目录，避免错误复用。
+
+### 5. 当前验证边界
+
+截至本次改造，已完成缓存机制接入和镜像配置；待 v4 镜像完成 cold/warm 两次真实运行
+后补充具体 cache 命中日志和耗时对比。缓存机制本身不等于端到端出图，prompt/tokenizer、
+scheduler、latent、patch/rope、denoise loop、VAE decode、PNG 输出和图像 API 仍未完成。
+
+## 2026-11-03 v4 镜像及缓存真实验证
+
+### 镜像结果
+
+```text
+image: tl-inference-server:flux-3-image-klein-local-20261103-v4
+image_id: sha256:cd2badff9ea0d87fb3722c52261a795dfa2150955fb28d3ef981de1c43ac92b3
+size: 8,298,064,005 bytes（约 8.30 GB）
+tt-metal: 23ef0fd19b
+build source: /local/lnn/TL-inference-server + /local/lnn/tt-metal
+```
+
+模型权重仍未复制进镜像，运行时挂载：
+
+```text
+/local/models/flux-3-image-klein-base:/local/models/flux-3-image-klein-base:ro
+```
+
+### 启动时的关键点
+
+必须把宿主缓存挂载为 `/local/fluxcache`，并设置：
+
+```bash
+-e CACHE_ROOT=/local/fluxcache \
+-v /local/lnn/fluxcache:/local/fluxcache
+```
+
+`CACHE_ROOT` 用于让镜像 entrypoint 自动为挂载卷设置容器用户可写的 group 权限。
+如果只设置 `TT_DIT_CACHE_DIR` 而不设置 `CACHE_ROOT`，entrypoint 不会处理权限，
+可能在 `/local/fluxcache/tt-metal-cache` 下面出现 `Permission denied`。本次验证中还
+修复了宿主机子目录 `tt-metal-cache` 的遗留 `root:root` 所有权，最终统一为 UID/GID
+`1000:1000`（主机用户 `tt`）。
+
+### Cold/warm 证据
+
+| 组件 | cold 结果 | warm 结果 | 缓存目录 |
+|---|---|---|---|
+| FLUX.3 DiT | 17.5 s，357 源 tensor，271 TTNN 参数 | 3.4 s，`1 HIT / 0 MISS`，JIT `6/6 hits` | `tt_dit_cache/flux-3-image-klein/transformer/CP1_0_TP1_0_SP1_0_mesh1x1_bf16` |
+| Qwen3-VL text encoder | 11.9 s，326 TTNN tensor | 2.4 s，`1 HIT / 0 MISS`，JIT `6/6 hits` | `tt_dit_cache/flux-3-image-klein/text_encoder/TP1_0_mesh1x1_bf16` |
+| FLUX.3 VAE | 7.0 s，168 TTNN tensor | 0.0 s，`1 HIT / 0 MISS`，JIT `6/6 hits` | `tt_dit_cache/flux-3-image-klein/vae/mesh1x1_bf16` |
+
+日志文件：
+
+```text
+/local/lnn/fluxcache/logs/flux3-image-klein-v4-build.log
+/local/lnn/fluxcache/logs/flux3-v4-dit-cold.log
+/local/lnn/fluxcache/logs/flux3-v4-dit-warm.log
+/local/lnn/fluxcache/logs/flux3-v4-text.log
+/local/lnn/fluxcache/logs/flux3-v4-text-warm.log
+/local/lnn/fluxcache/logs/flux3-v4-vae.log
+/local/lnn/fluxcache/logs/flux3-v4-vae-warm.log
+```
+
+本次验证证明的是“模型组件权重转换和缓存可复用”，不是端到端 T2I 出图。日志中的
+`No Physical Grouping Descriptor`、`TT_CLUSTER_NAME not set` 和 shared-memory warning
+未阻止单芯片 `(1,1)` 映射通过，但多芯片运行前仍应补齐相应部署配置。
+
 
 
 ## 2026-11-03 实际验证更新

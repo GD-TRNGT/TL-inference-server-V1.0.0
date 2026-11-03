@@ -940,6 +940,99 @@ TL-inference-server/main
 → PNG → API runner”的顺序推进；不能把 transformer 权重映射通过当成端到端
 T2I 已完成。
 
+## 2026-11-03 缓存持久化和 v4 镜像任务
+
+### 已完成
+
+- 在两个本地仓库中接入 FLUX.3 DiT/VAE 的 TTNN 权重缓存；
+- 将 Dockerfile 的缓存环境变量统一到 `/local/fluxcache`；
+- 宿主机缓存根目录确定为 `/local/lnn/fluxcache`，通过 volume 挂载到容器；
+- 镜像构建使用本地 `/local/lnn/tt-metal`，不从远端 clone tt-metal；
+- 模型权重仍通过只读 volume 挂载，不复制到镜像。
+
+### v4 构建与运行命令
+
+```bash
+cd /local/lnn/TL-inference-server
+sudo docker buildx build --load \
+  --build-context tt-metal-local=/local/lnn/tt-metal \
+  --build-arg TT_METAL_COMMIT_SHA_OR_TAG=23ef0fd19b \
+  -f tt-media-server/Dockerfile \
+  -t tl-inference-server:flux-3-image-klein-local-20261103-v4 .
+```
+
+运行时至少需要挂载：
+
+```bash
+-v /local/lnn/fluxcache:/local/fluxcache \
+-v /local/models/flux-3-image-klein-base:/local/models/flux-3-image-klein-base:ro \
+-v /dev/tenstorrent:/dev/tenstorrent \
+-v /dev/hugepages:/dev/hugepages \
+-v /dev/hugepages-1G:/dev/hugepages-1G
+```
+
+### 缓存验收
+
+1. 启动 v4，确认容器内 `TT_DIT_CACHE_DIR=/local/fluxcache/tt_dit_cache`、
+   `TT_METAL_CACHE=/local/fluxcache/tt-metal-cache`。
+2. 第一次执行 DiT、text encoder、VAE 映射，确认出现 `Cache does not exist` 和
+   `Writing cache to`，并检查宿主机 `/local/lnn/fluxcache` 大小增加。
+3. 停止并删除容器后，用相同命令再次启动。
+4. 第二次执行相同配置，确认出现 `loading cache at`，不再重复权重转换。
+5. 记录两次 `weight_load`、首次 kernel 编译和 warm run 时间。
+
+### 仍未完成
+
+缓存和组件映射完成后，完整 T2I 还剩：
+
+1. prompt tokenizer/processor 和 Qwen3-VL 输出契约；
+2. FLUX.3 latent 初始化、patchify/unpatchify、RoPE 和时间步编码；
+3. scheduler 与完整 denoise loop；
+4. DiT 三类 block 的真实前向执行和中间结果对齐；
+5. TTNN VAE decode 串联、图片后处理和 PNG/JPEG 输出；
+6. tt-media-server runner、同步/异步 API 及取消/错误处理；
+7. vLLM-Omni 或官方参考实现的 Golden Data 精度对齐；
+8. 2 芯片、4 芯片 mesh 和权重分片；
+9. 性能优化、kernel cache/trace、并发和内存峰值测试。
+
+## 2026-11-03 v4 实际验证结论
+
+v4 镜像已经用本地两个仓库构建并加载成功：
+
+```text
+tl-inference-server:flux-3-image-klein-local-20261103-v4
+size: 8,298,064,005 bytes
+tt-metal: 23ef0fd19b
+```
+
+验证时必须同时使用：
+
+```bash
+-e CACHE_ROOT=/local/fluxcache \
+-v /local/lnn/fluxcache:/local/fluxcache
+```
+
+其中 `CACHE_ROOT` 让 entrypoint 处理挂载卷权限；仅设置 `TT_DIT_CACHE_DIR` 会导致
+TT-Metal JIT 目录无法写入。宿主机 `/local/lnn/fluxcache/tt-metal-cache` 已修正为
+`tt:tt`（UID/GID 1000:1000）。
+
+缓存验证结果：
+
+| 组件 | cold | warm | 结论 |
+|---|---:|---:|---|
+| FLUX.3 DiT | 17.5 s | 3.4 s | 权重 `1 HIT/0 MISS`，JIT `6/6 hits` |
+| Qwen3-VL text encoder | 11.9 s | 2.4 s | 权重 `1 HIT/0 MISS`，JIT `6/6 hits` |
+| FLUX.3 VAE | 7.0 s | 0.0 s | 权重 `1 HIT/0 MISS`，JIT `6/6 hits` |
+
+三项组件结果分别为：DiT `357` 个源 tensor、`271` 个 TTNN 参数、`15` 个 mode
+block、`28` 个 single block；text encoder `36` 层和 8 个激活层；VAE `251` 个源
+tensor。由此可以确认 `/local/lnn/fluxcache` 已经真正承载转换缓存和 JIT 缓存。
+
+仍未完成的部分没有改变：完整 prompt/tokenizer → latent/patch/RoPE → scheduler/
+denoise → VAE decode → PNG → tt-media-server API；以及 2/4 芯片扩展、精度对齐、
+多请求并发和性能优化。当前交付物应表述为“FLUX.3 三个模型组件的单芯片权重映射、
+缓存持久化和复用验证完成”，不要表述为“FLUX.3 端到端推理完成”。
+
 
 ## 2026-11-03 T2I pipeline 组件映射验证结果
 
