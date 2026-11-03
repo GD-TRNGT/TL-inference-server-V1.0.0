@@ -82,11 +82,9 @@ RUN apt-get update && apt-get install -y \
     && protoc --version
 
 # Install CMake 3.26.4 to ensure compatibility with CMP0169
-RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.26.4/cmake-3.26.4-linux-x86_64.sh -o cmake.sh \
-    && chmod +x cmake.sh \
-    && ./cmake.sh --skip-license --prefix=/usr/local \
-    && rm cmake.sh \
-    && /usr/local/bin/cmake --version
+# The Galaxy base image already provides a usable CMake (currently 4.x).
+# Do not make the image build depend on downloading CMake from GitHub.
+RUN cmake --version
 
 # download.pytorch.org intermittently returns 503 during dependency installs;
 # raise uv's HTTP retry count (default 3) for every uv invocation in create_venv.sh.
