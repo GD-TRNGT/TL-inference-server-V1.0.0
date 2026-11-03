@@ -962,3 +962,16 @@ tt-metal commit: 23ef0fd19b
 ```
 
 镜像内已检查 Transformer、Qwen3-VL 和 VAE 映射代码存在，且模型权重路径不存在；因此该镜像与当前两个本地仓库代码一致，模型文件仍保持独立部署。
+
+### v3 真实设备复核
+
+使用 v3 镜像在 Galaxy02 物理芯片 `0`、mesh `(1,1)` 上重新执行：
+
+```text
+FULL_MAPPING_V3_OK {'source_tensors': 357, 'ttnn_parameter_entries': 271,
+                   'mode_blocks': 15, 'single_blocks': 28}
+TEXT_ENCODER_V3_OK Qwen3VlTextEncoder [4, 8, 12, 16, 20, 24, 28, 32]
+VAE_MAPPING_V3_OK {'source_tensors': 251}
+```
+
+三次容器运行均为 `STATUS=0`。这证明当前 v3 镜像内的本地源码可以在真实 Blackhole 设备上完成三类模型组件的权重转换；仍未证明完整 prompt → denoise → VAE → PNG 的端到端 T2I 运行。

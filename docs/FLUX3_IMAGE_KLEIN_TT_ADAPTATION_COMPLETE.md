@@ -360,6 +360,35 @@ tt-metal：23ef0fd19b
 - `transformer_flux3.py` 包含完整 DiT 映射代码；
 - `/local/models/flux-3-image-klein-base/model.safetensors` 不存在于镜像内。
 
+## 2026-11-03 v3 单芯片真实映射复核
+
+使用上述 v3 镜像、物理芯片 `0`、TTNN mesh `(1,1)`，并挂载 `/dev/tenstorrent`、
+`/dev/hugepages` 和 `/dev/hugepages-1G` 后重新执行三类权重加载。原始日志保存在：
+
+```text
+/local/lnn/flux3-v3-dit-map.log
+/local/lnn/flux3-v3-text-map.log
+/local/lnn/flux3-v3-vae-map.log
+```
+
+实际结果：
+
+```text
+FULL_MAPPING_V3_OK {
+  'source_tensors': 357,
+  'ttnn_parameter_entries': 271,
+  'mode_blocks': 15,
+  'single_blocks': 28
+}
+
+TEXT_ENCODER_V3_OK Qwen3VlTextEncoder [4, 8, 12, 16, 20, 24, 28, 32]
+
+VAE_MAPPING_V3_OK {'source_tensors': 251}
+```
+
+三次容器运行均记录 `STATUS=0`。其中 Qwen3-VL 实际转换 326 个 TTNN tensor，
+VAE 实际转换 168 个 TTNN tensor；源文件 tensor 数量分别按模型文件统计。
+
 
 
 ## 2026-11-03 实际验证更新
