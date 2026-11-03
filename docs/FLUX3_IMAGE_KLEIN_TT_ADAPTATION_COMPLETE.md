@@ -341,6 +341,25 @@ tt-media-server API：未接入
 
 恢复开发时，从第 10 节开始即可。暂停不会删除当前分支、未提交代码、模型文件或文档。
 
+## 2026-11-03 v3 本地源码镜像
+
+已使用 10.12.11.2 上的本地源码重新构建镜像：
+
+```text
+镜像：tl-inference-server:flux-3-image-klein-local-20261103-v3
+构建来源：/local/lnn/TL-inference-server + /local/lnn/tt-metal
+tt-metal：23ef0fd19b
+模型权重：未复制进镜像，运行时只读挂载
+镜像大小：约 8.30 GB
+```
+
+构建命令使用 BuildKit 的 `--build-context tt-metal-local=/local/lnn/tt-metal`，并通过
+`TT_METAL_COMMIT_SHA_OR_TAG=23ef0fd19b` 写入镜像环境变量。镜像内已检查：
+
+- `flux3_components.py` 包含 Qwen3-VL 和 VAE 权重加载入口；
+- `transformer_flux3.py` 包含完整 DiT 映射代码；
+- `/local/models/flux-3-image-klein-base/model.safetensors` 不存在于镜像内。
+
 
 
 ## 2026-11-03 实际验证更新

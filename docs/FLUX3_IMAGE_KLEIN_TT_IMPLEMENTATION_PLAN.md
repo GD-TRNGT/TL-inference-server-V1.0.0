@@ -949,3 +949,16 @@ T2I 已完成。
 | Qwen3-VL 文本编码器 | 已完成 | 36 层及 8 个配置激活层在单芯片加载通过 |
 | Flux3 VAE decoder | 已完成 | 251 个 safetensors 源张量加载通过 |
 | 端到端 T2I 运行 | 未完成 | 尚未串联 prompt、scheduler、denoise 和输出 API |
+
+### 2026-11-03 v3 镜像重建结果
+
+已用本地 `/local/lnn/TL-inference-server` 和 `/local/lnn/tt-metal` 重建：
+
+```text
+tl-inference-server:flux-3-image-klein-local-20261103-v3
+tt-metal commit: 23ef0fd19b
+镜像大小：约 8.30 GB
+模型权重：未进入镜像，运行时只读挂载 /local/models/flux-3-image-klein-base
+```
+
+镜像内已检查 Transformer、Qwen3-VL 和 VAE 映射代码存在，且模型权重路径不存在；因此该镜像与当前两个本地仓库代码一致，模型文件仍保持独立部署。
