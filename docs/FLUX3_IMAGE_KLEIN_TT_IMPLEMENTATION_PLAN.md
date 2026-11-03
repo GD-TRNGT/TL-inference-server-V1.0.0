@@ -2,10 +2,10 @@
 
 完整阶段性适配记录见：[FLUX3_IMAGE_KLEIN_TT_ADAPTATION_COMPLETE.md](C:/Users/Administrator/Documents/Codex/2026-10-27/https-github-com-tenstorrent-tt-inference/docs/FLUX3_IMAGE_KLEIN_TT_ADAPTATION_COMPLETE.md)
 
-更新时间：2026-11-02  
+更新时间：2026-11-03  
 开发仓库：/local/lnn/TL-inference-server  
 开发分支：flux-3-image-klein  
-当前基线提交：5ebf2d8a0d04ce8801adb8deec07198c9c686775
+当前基线提交：561f80d1（tt-metal：23ef0fd19b）
 
 本文基于当前仓库代码、10.12.11.2 的硬件信息以及已经检查过的 vLLM-Omni FLUX.3 实现整理。目标是在 TT-NN/TT-Metalium 上真正完成模型加载、推理、结果输出、精度对齐和性能优化，而不是只增加一个 API 名称。
 
@@ -56,7 +56,7 @@ tt-smi 当前如果出现设备映射错误，应单独排查 KMD、UMD 和设�
 
 ### 1.4 当前 tt-metal 的实际代码基线
 
-已检查 11.2 上的 `/local/lnn/tt-metal`。当前分支为 `flux-3-image-klein`，但该分支目前只是从仓库默认分支创建出来的开发分支，尚未加入 FLUX.3 实现。
+已检查 11.2 上的 `/local/lnn/tt-metal`。当前分支为 `flux-3-image-klein`，最新提交为 `23ef0fd19b`，已加入 FLUX.3 Transformer、Qwen3-VL 和 VAE 的权重映射代码。
 
 当前可以确认的相关实现是：
 
@@ -400,8 +400,7 @@ models/tt_dit/models/transformers/transformer_flux3.py
 - 3072 → 128 的 image output projection。
 - 单芯片优先的 TT-NN attention、SwiGLU、动态 LayerNorm 和 mesh 参数接口。
 
-该文件已经通过 Python syntax compile 检查，但还没有加载真实权重并执行设备推理；
-下一步是完成导出权重到 TT-NN module state 的映射，并在容器环境中运行单 block。
+该文件已经在 Docker/Blackhole 单芯片环境中加载真实权重并完成全量映射：357 个源 tensor、15 个实际 mode block（txt/image/image_cond 各 5 个）和 28 个 single block。
 
 这不是“已经完成端到端出图”：当前 `Flux3T2IPipeline.run()` 会明确报告
 TT transformer 和 Qwen3-VL encoder 尚未接入。这样可以先把权重格式、模型结构和
@@ -494,11 +493,12 @@ dtype
 7. VAE decode。
 8. pipeline 统一封装。
 
-阶段 2 的当前剩余阻塞点不是模型文件，而是实现工作：
+阶段 2 的当前剩余工作不是 Transformer 权重映射，而是完整 pipeline 串联：
 
-- 将 FLUX.3 的 per-mode block（每个 block 使用 3 路 shift/scale/gate）映射到 TT-NN。
-- 将 28 个 joint single block 映射到 TT-NN，并保持 text/image token 的调制顺序。
-- 将 `model.safetensors` 的导出命名映射到 TT-Metal module state。
+- 已完成 FLUX.3 的 per-mode block（每个 block 使用 3 路 shift/scale/gate）到 TT-NN 的映射。
+- 已完成 28 个 joint single block 映射，并保持 text/image token 的调制顺序。
+- 已完成 `model.safetensors` 的导出命名到 TT-Metal module state 的映射。
+- 已完成 Qwen3-VL 36 层权重映射和 FLUX3 VAE 251 个源 tensor 映射。
 - 先允许外部传入 20480 维 `prompt_embeds` 完成 DiT/VAE bring-up，再补 Qwen3-VL 的 TT encoder。
 - 在当前无 PyTorch/safetensors 主机环境下，使用 Docker 构建环境完成真实权重加载和设备执行。
 
@@ -517,6 +517,19 @@ pipeline.run_single_prompt(
     height=...,
 )
 ~~~
+
+### 2026-11-03 映射完成边界
+
+已完成并实测：
+
+| 组件 | 结果 |
+|---|---|
+| FLUX.3 DiT | 357/357 源 tensor；15 个 mode block；28 个 single block |
+| Qwen3-VL 文本编码器 | 36 层，8 个配置激活层 |
+| FLUX3 VAE decoder | 251 个 safetensors 源 tensor |
+| Docker 来源 | BuildKit `--build-context tt-metal-local=/local/lnn/tt-metal`，模型权重不进入镜像 |
+
+以上表示完整 T2I pipeline 所需模型组件的权重映射已完成，不表示 prompt → denoise → VAE → PNG 的端到端出图已经完成。剩余顺序为：文本编码执行、latent/patch/RoPE、scheduler、denoise loop、VAE decode、PNG 输出和 tt-media-server API。
 
 每个张量都要明确记录：
 

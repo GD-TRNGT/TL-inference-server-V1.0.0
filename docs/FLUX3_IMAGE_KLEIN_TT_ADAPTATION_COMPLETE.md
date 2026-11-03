@@ -1,7 +1,7 @@
 # FLUX.3 Image Klein 在 TT-Metal/TT-inference-server 上的适配记录
 
-更新时间：2026-11-02  
-状态：阶段性暂停。当前代码和文档保留，但尚未完成端到端出图。
+更新时间：2026-11-03  
+状态：FLUX.3 T2I 三个模型组件的权重映射已完成并通过单芯片验证；端到端出图、服务化和多芯片扩展仍未完成。
 
 ## 1. 目标
 
@@ -39,7 +39,7 @@ TP/SP 和权重分片策略。
 ```text
 路径：/local/lnn/TL-inference-server
 分支：flux-3-image-klein
-commit：5ebf2d8a0d04ce8801adb8deec07198c9c686775
+commit：561f80d1
 origin：https://github.com/GD-TRNGT/TL-inference-server-V1.0.0.git
 ```
 
@@ -50,7 +50,7 @@ origin：https://github.com/GD-TRNGT/TL-inference-server-V1.0.0.git
 ```text
 路径：/local/lnn/tt-metal
 分支：flux-3-image-klein
-commit：3c8681218b0951637991d20ce6b7e341df3b6879
+commit：23ef0fd19b
 origin：https://github.com/GD-TRNGT/TL-metal-V1.0.0.git
 ```
 
@@ -203,7 +203,7 @@ docker buildx build \
 - 校验 T2I 请求；
 - 根据模型配置创建 `Flux3Transformer`。
 
-尚未完成：Qwen3-VL、scheduler、latent、denoise loop、VAE decode 和图片输出。
+已完成模型组件构建入口和权重加载入口；尚未完成：Qwen3-VL 的实际文本编码执行、scheduler、latent、denoise loop、VAE decode 串联和图片输出。
 
 ### 6.4 TT-NN FLUX.3 transformer 初版
 
@@ -226,7 +226,7 @@ docker buildx build \
 - TT-NN attention、SwiGLU、动态 LayerNorm；
 - image output projection。
 
-该文件已通过 Python syntax compile 检查，但尚未在真实 Docker 运行时加载权重并执行设备计算。
+该文件已在 Docker/Blackhole 单芯片环境中加载真实权重并完成全量映射验证：357 个源 tensor、15 个实际 mode block（txt/image/image_cond 各 5 个）和 28 个 single block。
 
 ## 7. 已完成验证
 
@@ -236,13 +236,15 @@ docker buildx build \
 模型配置读取：通过
 manifest 校验：通过
 357 tensor 校验：通过
-关键权重名校验：通过
+Transformer 全量权重映射：通过（FULL_MAPPING_OK）
+Qwen3-VL 权重映射：通过（36 层，8 个配置激活层）
+VAE 权重映射：通过（251 个 safetensors tensor）
 T2I 请求契约校验：通过
 Python syntax compile：通过
 ```
 
-当前 `pipeline.run()` 会明确提示 transformer、Qwen3-VL、scheduler、latent 和 VAE 尚未接入，
-不会伪装成已经完成推理。
+当前 `pipeline.run()` 仍会明确提示文本编码执行、scheduler、latent、denoise loop 和 VAE 输出尚未串联，
+不会把“权重映射通过”伪装成“端到端图片生成完成”。
 
 ## 8. 当前阻塞点
 
@@ -267,7 +269,7 @@ ModuleNotFoundError: No module named 'torch'
 
 ### 9.1 权重映射
 
-需要完成以下导出权重到 TT-NN module state 的映射：
+以下模型组件的导出权重到 TT-NN module state 映射已经完成：
 
 - `emb_in.image`、`txt_in`、`time_in`；
 - early/single modulation；
@@ -275,7 +277,9 @@ ModuleNotFoundError: No module named 'torch'
 - final layer；
 - Q/K/V 合并和 per-head RMSNorm；
 - SwiGLU fused 权重布局；
-- 1/2/4 芯片权重分片。
+- 1/2/4 芯片权重分片仍待实现和验证。
+
+已实测结果：DiT 357 个源 tensor、TTNN 271 个参数条目；Qwen3-VL 36 层；VAE 251 个源 tensor。
 
 ### 9.2 Qwen3-VL
 
@@ -327,8 +331,8 @@ model constants/settings
 T2I 请求边界：已确定
 FLUX.3 TT-NN transformer 初版：已加入
 代码 syntax compile：已通过
-真实权重加载：未完成
-真实设备推理：未完成
+真实权重加载：已完成（DiT/Qwen3-VL/VAE 映射级验证）
+真实设备推理：已完成设备初始化和映射路径执行；端到端 denoise 仍未完成
 最终图片生成：未完成
 tt-media-server API：未接入
 2/4 芯片扩展：未开始

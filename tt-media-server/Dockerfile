@@ -18,7 +18,7 @@ LABEL org.opencontainers.image.source=https://github.com/tenstorrent/tt-inferenc
 ARG DEBIAN_FRONTEND=noninteractive
 # The image is built from a local tt-metal BuildKit context. Override this with
 # the exact local tt-metal commit at build time.
-# Example: --build-arg TT_METAL_COMMIT_SHA_OR_TAG=3c8681218b0951637991d20ce6b7e341df3b6879
+# Example: --build-arg TT_METAL_COMMIT_SHA_OR_TAG=23ef0fd19b
 ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
 # FLUX.3 weights are intentionally not copied into the image. Mount the
 # model directory read-only at runtime, for example:
