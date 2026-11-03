@@ -248,22 +248,39 @@ Python syntax compile：通过
 
 ## 8. 当前阻塞点
 
-10.12.11.2 宿主机 Python 环境检查结果：
+### 8.1 已解除的历史阻塞点
 
-```text
-torch：不可用
-safetensors：不可用
-ttnn：可用
-```
-
-直接在宿主机导入 TT-Metal 模型模块会遇到：
+早期直接使用 10.12.11.2 宿主机 Python 环境时，`torch` 和 `safetensors` 不可用，
+曾出现：
 
 ```text
 ModuleNotFoundError: No module named 'torch'
 ```
 
-这表示宿主机没有完整模型运行环境，不代表模型文件不存在或硬件不支持。后续必须在 Docker
-环境中验证真实权重加载和设备执行。
+这个问题已经通过 v4 Docker 镜像解决。当前实际验证使用：
+
+```text
+镜像：tl-inference-server:flux-3-image-klein-local-20261103-v4
+设备：Blackhole Galaxy，物理芯片 0，mesh=(1,1)
+模型：/local/models/flux-3-image-klein-base（只读挂载）
+缓存：/local/lnn/fluxcache（挂载到容器 /local/fluxcache）
+```
+
+已经在真实设备上完成 DiT、Qwen3-VL text encoder 和 VAE 的权重映射，且 cold/warm
+缓存验证通过。因此“宿主机没有完整 PyTorch 环境”不再是当前阻塞点；以后应使用
+容器环境执行验证，不应把宿主机直接 import 结果当作模型适配失败。
+
+### 8.2 当前真正的阻塞点
+
+1. 三个模型组件虽然可以分别加载，但还没有串成完整的 prompt → latent → denoise →
+   VAE decode → PNG 的 T2I 流程。
+2. 尚未完成 FLUX.3 的 tokenizer/processor、latent 初始化、patchify/unpatchify、
+   RoPE、scheduler 和完整 denoise loop 的实际 TTNN 前向执行。
+3. 尚未接入 `tt-media-server` 的 FLUX.3 runner 和 `/v1/images/generations` API。
+4. 尚未进行 vLLM/参考实现与 TTNN 的中间张量、最终图片和精度对齐。
+5. 尚未验证 2 芯片、4 芯片 mesh 下的权重分片、通信和缓存隔离。
+6. 启动服务时必须挂载 `/local/lnn/fluxcache` 并设置
+   `CACHE_ROOT=/local/fluxcache`；否则 entrypoint 可能无法为 JIT cache 设置可写权限。
 
 ## 9. 尚未完成的适配工作
 
