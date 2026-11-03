@@ -114,25 +114,6 @@ flux3_full_mapping_test.py
   -> transformer_flux3.py 中的权重映射和 TTNN 参数写入
 ```
 
-### 这个文件中具体实现了什么
-
-这里虽然和上一节使用同一个 `transformer_flux3.py`，但使用的是文件中的不同代码区域：
-
-```text
-结构定义区域：
-Flux3TimeIn
-Flux3ModeBlock
-Flux3SingleBlock
-Flux3Transformer.__init__
-
-权重映射区域：
-Flux3Transformer._block_state()
-Flux3Transformer._flux3_state_dict()
-Flux3Transformer.load_flux3_checkpoint()
-```
-
-因此本步骤不是重新建立网络结构，而是给上一节已经创建好的 TTNN module 填充真实 FLUX.3 权重。
-
 ### 做了什么
 
 新增并实现以下模块：
@@ -171,8 +152,6 @@ Flux3Transformer.__init__()
 Flux3Transformer.forward(...)
   按 text mode blocks -> image mode blocks -> single blocks 的顺序执行前向。
 ```
-
-这一部分只负责“模型结构和前向计算图的定义”。它不负责读取 `model.safetensors`，权重读取和 key 转换在下一步的 `_block_state()`、`_flux3_state_dict()` 中完成。
 
 ### 结构数量说明
 
@@ -259,13 +238,6 @@ Flux3Transformer.load_flux3_checkpoint(checkpoint)
 ```
 
 作用：调用 `_flux3_state_dict()` 生成 TTNN 可用的 state dict，再通过 `cache.load_model()` 或等效加载路径把参数写入设备模型，并返回映射统计结果。
-
-所以两部分的区别是：
-
-| 部分 | 文件中的代码 | 解决的问题 |
-|---|---|---|
-| 第二步：Transformer 结构 | `Flux3ModeBlock`、`Flux3SingleBlock`、`Flux3Transformer.__init__` | TTNN 中有哪些层、层如何连接、每层有哪些算子 |
-| 第三步：DiT 权重映射 | `_block_state()`、`_flux3_state_dict()`、`load_flux3_checkpoint()` | safetensors 中的权重如何对应到这些 TTNN 层 |
 
 ### 实际结果
 
