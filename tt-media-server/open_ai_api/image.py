@@ -11,10 +11,12 @@ import json
 import os
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Security, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from model_services.base_service import BaseService
+from model_services.image_service import ImageService
 from resolver.service_resolver import service_resolver
 from security.api_key_checker import get_api_key
+from config.constants import JobTypes
 
 _LORA_DIR = os.environ.get("LORA_DIR", "/loras")
 _LORA_STATE = os.path.join(_LORA_DIR, "active_lora.json")
@@ -96,6 +98,51 @@ async def generate_image(
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@generate_image_router.post("/generations/async", status_code=202)
+async def submit_async_image(
+    image_generate_request: ImageGenerateRequest,
+    service: ImageService = Depends(service_resolver),
+    api_key: str = Security(get_api_key),
+):
+    try:
+        return JSONResponse(content=await service.create_image_job(image_generate_request), status_code=202)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@generate_image_router.get("/generations/{job_id}")
+def get_image_job(job_id: str, service: ImageService = Depends(service_resolver), api_key: str = Security(get_api_key)):
+    data = service.image_job_metadata(job_id)
+    if data is None or data.get("job_type") != JobTypes.IMAGE.value:
+        raise HTTPException(status_code=404, detail="Image job not found")
+    if data.get("status") == "completed":
+        result = service.read_image_job_result(job_id)
+        if result is not None:
+            data["images"] = result["images"]
+    return JSONResponse(content=data)
+
+
+@generate_image_router.post("/generations/{job_id}/cancel")
+def cancel_image_job(job_id: str, service: ImageService = Depends(service_resolver), api_key: str = Security(get_api_key)):
+    data = service.cancel_image_job(job_id)
+    if data is None or data.get("job_type") != JobTypes.IMAGE.value:
+        raise HTTPException(status_code=404, detail="Image job not found")
+    return JSONResponse(content=data)
+
+
+@generate_image_router.delete("/generations/{job_id}")
+async def delete_image_job(job_id: str, service: ImageService = Depends(service_resolver), api_key: str = Security(get_api_key)):
+    try:
+        deleted = await service.delete_image_job(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Image job not found")
+    return JSONResponse(content={"id": job_id, "object": JobTypes.IMAGE.value, "deleted": True})
 
 
 image_to_image_router = APIRouter()

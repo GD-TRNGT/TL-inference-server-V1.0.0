@@ -36,6 +36,10 @@ from domain.video_i2v_generate_request import ImagePromptEntry, VideoI2VGenerate
 from huggingface_hub import hf_hub_download
 from models.common.utility_functions import is_blackhole
 from models.tt_dit.pipelines.flux1.pipeline_flux1 import Flux1Pipeline
+from models.tt_dit.pipelines.flux3.pipeline_flux3 import Flux3T2IPipeline
+from models.tt_dit.pipelines.flux3.t2i_contract import Flux3T2IRequest
+from models.tt_dit.parallel.config import DiTParallelConfig, EncoderParallelConfig
+from models.tt_dit.parallel.manager import CCLManager
 
 try:
     from models.tt_dit.pipelines.flux1.pipeline_flux1_kontext import (
@@ -100,6 +104,7 @@ dit_runner_log_map = {
     ModelRunners.TT_FLUX_1_DEV.value: "FLUX.1-dev",
     ModelRunners.TT_FLUX_1_SCHNELL.value: "FLUX.1-schnell",
     ModelRunners.TT_FLUX_1_KONTEXT_DEV.value: "FLUX.1-Kontext-dev",
+    ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value: "FLUX.3-Image-Klein",
     ModelRunners.TT_MOTIF_IMAGE_6B_PREVIEW.value: "Motif-Image-6B-Preview",
     ModelRunners.TT_MOCHI_1.value: "Mochi1",
     ModelRunners.TT_WAN_2_2.value: "Wan22",
@@ -495,6 +500,52 @@ class TTMotifImage6BPreviewRunner(TTDiTRunner):
 
 
 # Runner for Qwen-Image and Qwen-Image-2512. Model weights from settings.model_weights_path determine the exact model variant.
+class TTFlux3ImageKleinRunner(TTDiTRunner):
+    """FLUX.3 Image Klein text-to-image runner backed by the TTNN pipeline."""
+
+    def __init__(self, device_id: str):
+        super().__init__(device_id)
+        self._ccl_manager = None
+        self._dit_parallel = None
+        self._encoder_parallel = None
+
+    def create_pipeline(self):
+        self._ccl_manager = CCLManager(self.ttnn_device, topology=ttnn.Topology.Linear)
+        self._dit_parallel = DiTParallelConfig.from_tuples(cfg=(1, 0), sp=(1, 0), tp=(1, 0))
+        self._encoder_parallel = EncoderParallelConfig.from_tuple((1, 0))
+        weights_path = os.environ.get(
+            "FLUX3_MODEL_ROOT",
+            self.settings.model_weights_path,
+        )
+        return Flux3T2IPipeline(weights_path)
+
+    def run(self, requests: list[ImageGenerateRequest]):
+        request = requests[0]
+        height = request.height or 1024
+        width = request.width or 1024
+        steps = int(request.num_inference_steps or 20)
+        flux_request = Flux3T2IRequest(
+            prompt=request.prompt,
+            height=height,
+            width=width,
+            steps=steps,
+            seed=int(request.seed or 0),
+            guidance=float(getattr(request, "guidance_scale", 3.5)),
+        )
+        return [
+            self.pipeline.run(
+                flux_request,
+                device=self.ttnn_device,
+                ccl_manager=self._ccl_manager,
+                parallel_config=self._dit_parallel,
+                encoder_parallel_config=self._encoder_parallel,
+            )["image"]
+        ]
+
+    def get_pipeline_device_params(self):
+        return {"l1_small_size": 65536, "fabric_config": ttnn.FabricConfig.DISABLED}
+
+
 class TTQwenImageRunner(TTDiTRunner):
     def __init__(self, device_id: str):
         super().__init__(device_id)

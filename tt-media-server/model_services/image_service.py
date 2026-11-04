@@ -2,10 +2,20 @@
 #
 # SPDX-FileCopyrightText: © 2025 Tenstorrent USA, Inc.
 
+import json
+import os
+
+import json
+import os
+
 import numpy as np
 from config.settings import settings
+from config.constants import JobTypes
+from config.constants import JobTypes
 from domain.image_generate_request import ImageGenerateRequest
 from model_services.base_service import BaseService
+from utils.job_manager import get_job_manager
+from utils.job_manager import get_job_manager
 from model_services.cpu_workload_handler import CpuWorkloadHandler
 from PIL import Image
 from telemetry.image_request_metrics import observe_image_request
@@ -24,6 +34,10 @@ def image_worker_function(image_manager, image_data, input_request=None):
 class ImageService(BaseService):
     def __init__(self):
         super().__init__()
+        self._job_manager = get_job_manager()
+        self._job_output_dir = os.environ.get("IMAGE_JOB_OUTPUT_DIR", "/tmp/tt-media-server/image-jobs")
+        self._job_manager = get_job_manager()
+        self._job_output_dir = os.environ.get("IMAGE_JOB_OUTPUT_DIR", "/tmp/tt-media-server/image-jobs")
 
         warmup_task_data = [Image.fromarray(np.zeros((64, 64, 3), dtype=np.uint8))]
         self._cpu_workload_handler = CpuWorkloadHandler(
@@ -33,6 +47,41 @@ class ImageService(BaseService):
             worker_context_setup=create_image_worker_context,
             warmup_task_data=warmup_task_data,
         )
+
+    async def create_image_job(self, request: ImageGenerateRequest) -> dict:
+        """Submit an image generation job using the shared JobManager."""
+        async def run_and_persist(job_request):
+            images = await self.process_request(job_request)
+            os.makedirs(self._job_output_dir, exist_ok=True)
+            path = os.path.join(self._job_output_dir, f"{job_request._task_id}.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"images": images}, handle)
+            return path
+
+        return await self._job_manager.create_job(
+            job_id=request._task_id,
+            job_type=JobTypes.IMAGE,
+            model=os.environ.get("SERVED_MODEL_NAME") or settings.model_weights_path,
+            request=request,
+            task_function=run_and_persist,
+            request_parameters=request.model_dump(mode="json"),
+        )
+
+    def image_job_metadata(self, job_id: str):
+        return self._job_manager.get_job_metadata(job_id)
+
+    def read_image_job_result(self, job_id: str):
+        path = self._job_manager.get_job_result_path(job_id)
+        if not path or not os.path.isfile(path):
+            return None
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def cancel_image_job(self, job_id: str):
+        return self._job_manager.cancel_job(job_id)
+
+    async def delete_image_job(self, job_id: str):
+        return await self._job_manager.delete_job(job_id)
 
     async def pre_process(self, request: ImageGenerateRequest):
         """Set up segments for multi-image generation"""

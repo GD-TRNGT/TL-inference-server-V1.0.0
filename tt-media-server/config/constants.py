@@ -17,6 +17,7 @@ class SupportedModels(Enum):
     FLUX_1_DEV = "black-forest-labs/FLUX.1-dev"
     FLUX_1_SCHNELL = "black-forest-labs/FLUX.1-schnell"
     FLUX_1_KONTEXT_DEV = "black-forest-labs/FLUX.1-Kontext-dev"
+    FLUX_3_IMAGE_KLEIN = "flux-3-image-klein-base"
     MOTIF_IMAGE_6B_PREVIEW = "Motif-Technologies/Motif-Image-6B-Preview"
     QWEN_IMAGE = "Qwen/Qwen-Image"
     QWEN_IMAGE_2512 = "Qwen/Qwen-Image-2512"
@@ -74,6 +75,7 @@ class ModelNames(Enum):
     FLUX_1_DEV = "FLUX.1-dev"
     FLUX_1_SCHNELL = "FLUX.1-schnell"
     FLUX_1_KONTEXT_DEV = "FLUX.1-Kontext-dev"
+    FLUX_3_IMAGE_KLEIN = "FLUX.3-Image-Klein"
     MOTIF_IMAGE_6B_PREVIEW = "Motif-Image-6B-Preview"
     QWEN_IMAGE = "Qwen-Image"
     QWEN_IMAGE_2512 = "Qwen-Image-2512"
@@ -133,6 +135,7 @@ class ModelRunners(Enum):
     TT_FLUX_1_DEV = "tt-flux.1-dev"
     TT_FLUX_1_SCHNELL = "tt-flux.1-schnell"
     TT_FLUX_1_KONTEXT_DEV = "tt-flux.1-kontext-dev"
+    TT_FLUX_3_IMAGE_KLEIN = "tt-flux.3-image-klein"
     TT_MOTIF_IMAGE_6B_PREVIEW = "tt-motif-image-6b-preview"
     TT_QWEN_IMAGE = "tt-qwen-image"
     TT_QWEN_IMAGE_2512 = "tt-qwen-image-2512"
@@ -206,6 +209,7 @@ MODEL_SERVICE_RUNNER_MAP = {
         ModelRunners.TT_FLUX_1_DEV,
         ModelRunners.TT_FLUX_1_SCHNELL,
         ModelRunners.TT_FLUX_1_KONTEXT_DEV,
+        ModelRunners.TT_FLUX_3_IMAGE_KLEIN,
         ModelRunners.TT_MOTIF_IMAGE_6B_PREVIEW,
         ModelRunners.TT_QWEN_IMAGE,
         ModelRunners.TT_QWEN_IMAGE_2512,
@@ -393,6 +397,7 @@ INFERENCE_MODEL_RUNNER_TO_MODEL_NAMES_MAP = {
     ModelRunners.TT_FLUX_1_DEV: {ModelNames.FLUX_1_DEV},
     ModelRunners.TT_FLUX_1_SCHNELL: {ModelNames.FLUX_1_SCHNELL},
     ModelRunners.TT_FLUX_1_KONTEXT_DEV: {ModelNames.FLUX_1_KONTEXT_DEV},
+    ModelRunners.TT_FLUX_3_IMAGE_KLEIN: {ModelNames.FLUX_3_IMAGE_KLEIN},
     ModelRunners.TT_MOTIF_IMAGE_6B_PREVIEW: {ModelNames.MOTIF_IMAGE_6B_PREVIEW},
     ModelRunners.TT_QWEN_IMAGE: {ModelNames.QWEN_IMAGE},
     ModelRunners.TT_QWEN_IMAGE_2512: {ModelNames.QWEN_IMAGE_2512},
@@ -647,6 +652,7 @@ TTS_RESPONSE_FORMATS = AUDIO_RESPONSE_FORMATS | frozenset(
 
 class JobTypes(Enum):
     VIDEO = "video"
+    IMAGE = "image"
     TRAINING = "training"
     ADAPTER_MERGE = "adapter_merge"
 
@@ -921,6 +927,20 @@ ModelConfigs = {
         "device_ids": DeviceIds.DEVICE_IDS_32_GROUP.value,
         "max_batch_size": 1,
         "request_processing_timeout_seconds": 2000,
+    },
+    (ModelRunners.TT_FLUX_3_IMAGE_KLEIN, DeviceTypes.BLACKHOLE_GALAXY): {
+        "device_mesh_shape": (1, 1),
+        "is_galaxy": False,
+        "device_ids": DeviceIds.DEVICE_IDS_32.value,
+        "max_batch_size": 1,
+        "request_processing_timeout_seconds": 3000,
+    },
+    (ModelRunners.TT_FLUX_3_IMAGE_KLEIN, DeviceTypes.GALAXY): {
+        "device_mesh_shape": (1, 1),
+        "is_galaxy": False,
+        "device_ids": DeviceIds.DEVICE_IDS_32.value,
+        "max_batch_size": 1,
+        "request_processing_timeout_seconds": 3000,
     },
     (ModelRunners.TT_FLUX_1_DEV, DeviceTypes.T3K): {
         "device_mesh_shape": (2, 4),

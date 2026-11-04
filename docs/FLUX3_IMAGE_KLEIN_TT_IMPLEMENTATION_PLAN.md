@@ -1028,10 +1028,35 @@ TT-Metal JIT 目录无法写入。宿主机 `/local/lnn/fluxcache/tt-metal-cache
 block、`28` 个 single block；text encoder `36` 层和 8 个激活层；VAE `251` 个源
 tensor。由此可以确认 `/local/lnn/fluxcache` 已经真正承载转换缓存和 JIT 缓存。
 
-仍未完成的部分没有改变：完整 prompt/tokenizer → latent/patch/RoPE → scheduler/
-denoise → VAE decode → PNG → tt-media-server API；以及 2/4 芯片扩展、精度对齐、
-多请求并发和性能优化。当前交付物应表述为“FLUX.3 三个模型组件的单芯片权重映射、
-缓存持久化和复用验证完成”，不要表述为“FLUX.3 端到端推理完成”。
+当前状态已更新：完整 prompt/tokenizer → latent/patch/RoPE → scheduler/denoise
+→ VAE decode → PNG → tt-media-server 同步 API 已完成，并已通过单请求和 64 并发
+验证。图片异步提交、轮询和 cancel 也已接入共享 JobManager，并完成真实服务验证。
+2/4 芯片扩展和精度对齐按当前任务要求暂缓；matmul/trace 专项性能优化、服务重启
+恢复和独立图片下载接口仍未完成。
+
+## 2026-11-04 执行状态更新
+
+| 工作项 | 状态 | 证据/实现位置 |
+|---|---|---|
+| 单芯片完整 T2I | 已完成 | `pipeline_flux3.py`、`TTFlux3ImageKleinRunner`、HTTP 200 图片输出 |
+| 32 worker 单芯片并行 | 已完成 | `(1,1)` mesh，worker 0～31 warmup 和 64 并发 |
+| 持久化 cache | 已完成 | Dockerfile 的 `FLUXCACHE_DIR`、宿主 `/local/lnn/fluxcache` |
+| 图片异步提交 | 已完成 | `open_ai_api/image.py` 的 `/generations/async` |
+| 图片轮询 | 已完成 | `/v1/images/generations/{job_id}` |
+| 图片 cancel | 已完成 | `ImageService.cancel_image_job()` 复用 `JobManager.cancel_job()` |
+| 50-step cancel 真实验证 | 已完成 | `queued -> cancelling -> cancelled` |
+| 12-step 异步完成真实验证 | 已完成 | `status=completed`、`image_count=1` |
+| 2/4 芯片并行 | 暂缓 | 当前只保留 `(1,1)` 单芯片实现 |
+| 精度对齐 | 暂缓 | 不导出或比较 Golden Data |
+| matmul/trace 专项优化 | 未完成 | 需单独 profiling 后实施 |
+| 服务重启恢复 | 未完成 | 当前重启后重新 warmup，未恢复历史 image job |
+
+### 本轮代码变更
+
+1. `config/constants.py` 增加 `JobTypes.IMAGE`，并移除无关的 `SP_RUNNER` 设备 ID 改动。
+2. `model_services/image_service.py` 增加图片任务创建、JSON 结果持久化、状态查询、取消和删除。
+3. `open_ai_api/image.py` 增加图片 async submit、poll、cancel、delete API；同步 API 不变。
+4. Dockerfile 保持本地 tt-metal BuildKit context 和 `/local/fluxcache` 运行时缓存，模型权重仍只读挂载，不复制进镜像。
 
 
 ## 2026-11-03 T2I pipeline 组件映射验证结果

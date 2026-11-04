@@ -28,6 +28,9 @@ AVAILABLE_RUNNERS = {
     ModelRunners.TT_FLUX_1_SCHNELL: lambda wid: __import__(
         "tt_model_runners.dit_runners", fromlist=["TTFlux1Runner"]
     ).TTFlux1Runner(wid),
+    ModelRunners.TT_FLUX_3_IMAGE_KLEIN: lambda wid: __import__(
+        "tt_model_runners.dit_runners", fromlist=["TTFlux3ImageKleinRunner"]
+    ).TTFlux3ImageKleinRunner(wid),
     ModelRunners.TT_FLUX_1_KONTEXT_DEV: lambda wid: __import__(
         "tt_model_runners.dit_runners", fromlist=["TTFluxKontextRunner"]
     ).TTFluxKontextRunner(wid),

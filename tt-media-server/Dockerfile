@@ -322,6 +322,7 @@ ENV FLUXCACHE_DIR=${FLUXCACHE_DIR} \
     TORCH_HOME=${FLUXCACHE_DIR}/torch \
     TRITON_CACHE_DIR=${FLUXCACHE_DIR}/triton \
     MPLCONFIGDIR=${FLUXCACHE_DIR}/mpl \
+    IMAGE_JOB_OUTPUT_DIR=${FLUXCACHE_DIR}/image-jobs \
     TMPDIR=${FLUXCACHE_DIR}/tmp
 
 # Install runtime dependencies
