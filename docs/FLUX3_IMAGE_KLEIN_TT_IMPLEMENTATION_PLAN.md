@@ -2,7 +2,7 @@
 
 完整阶段性适配记录见：[FLUX3_IMAGE_KLEIN_TT_ADAPTATION_COMPLETE.md](C:/Users/Administrator/Documents/Codex/2026-10-27/https-github-com-tenstorrent-tt-inference/docs/FLUX3_IMAGE_KLEIN_TT_ADAPTATION_COMPLETE.md)
 
-更新时间：2026-11-03  
+更新时间：2026-11-04
 开发仓库：/local/lnn/TL-inference-server  
 开发分支：flux-3-image-klein  
 当前基线提交：561f80d1（tt-metal：23ef0fd19b）
@@ -45,7 +45,7 @@ tt-smi 当前如果出现设备映射错误，应单独排查 KMD、UMD 和设�
 - TTFlux1Runner、Qwen-Image、SD3.5、MiniMax-H3 等 runner。
 - 通过 models.tt_dit.pipelines.* 调用 TT-Metal/TT-NN 侧 pipeline 的代码边界。
 
-当前尚未实现 FLUX.3：
+以下内容是制定计划时的历史基线；当前 FLUX.3 T2I 已实现，最终状态见本文末尾“2026-11-04 双模型质量修复后的当前状态”：
 
 - config/constants.py 中没有 FLUX.3 的模型、runner 和服务映射。
 - runner_fabric.py 中没有 FLUX.3 runner 注册。
@@ -83,10 +83,11 @@ models/tt_dit/models/transformers/transformer_flux3.py
 
 ### 1.5 当前 FLUX.3 本地模型资产
 
-11.2 上已经存在本地模型目录：
+11.2 上已经存在两套本地模型目录：
 
 ~~~text
 /local/models/flux-3-image-klein-base
+/local/models/flux-3-image-klein
 ~~~
 
 已检查到该目录约 41 GB，包含：
@@ -357,7 +358,7 @@ tt-media-server/
 
 - 单个 Blackhole 芯片优先。
 - BF16。
-- 1024×1024。
+- 客户端可指定宽高；当前要求宽高均为 16 的倍数，1024×1024 是默认值。
 - batch=1。
 - 固定 seed。
 - 固定 inference steps。
@@ -381,7 +382,7 @@ models/tt_dit/tests/flux3/test_config.py
 2. 校验 `manifest.json` 的模型类型为 `flux-3-image-klein`、导出类型为 `f3_dit_export`。
 3. 读取 BF16 `model.safetensors` 的 header，不依赖 PyTorch 或 safetensors Python 包。
 4. 校验本地导出包含 357 个 tensor，以及 FLUX.3 T2I 所需的关键权重名。
-5. 固定 T2I 请求契约：单 prompt、1024×1024、batch=1、固定 seed/steps/guidance。
+5. 固定 T2I 请求契约：单 prompt、batch=1、固定 seed/steps/guidance；宽高由客户端提供并按 latent patch 约束校验。
 6. 明确了下一步的两个执行入口：Qwen3-VL prompt encoder 和 `Flux3Transformer`。
 
 随后已加入第一版 TT-NN DiT 结构文件：
@@ -468,7 +469,7 @@ dtype
 
 - 单 prompt。
 - 单张输出。
-- 固定分辨率，例如 1024×1024 或官方推荐 bucket。
+- 客户端可指定分辨率；宽高必须是 `vae_scale_factor * patch_size` 的整数倍，当前为 16 的倍数。
 - 固定 dtype。
 - 固定 steps。
 - 固定 seed。
@@ -1057,19 +1058,33 @@ curl -fS http://127.0.0.1:8000/v1/images/generations \\
   -o output.png
 ```
 
-该项只涉及 `TL-inference-server` API 层，不涉及 `tt-metal` 算子或权重实现。已在 11.2 的 `flux3-media-server-test` 容器上完成真实 HTTP 验证：默认分辨率、12 步、PNG 文件响应返回 HTTP 200；输出为 1024x1024 PNG。当前 runner 对自定义 256x256 分辨率仍有限制，属于模型第一阶段分辨率边界。
+该项同时涉及 API 参数传递和 FLUX.3 TTNN 请求契约：`tt-media-server` 已经把客户端的 `width`/`height` 传给 `Flux3T2IRequest`；本轮在 `tt-metal/models/tt_dit/pipelines/flux3/t2i_contract.py` 删除固定 1024×1024 限制，改为 16 倍数校验。
 
 ### 2026-11-04：50 步分辨率测试
 
-在同一服务上使用 `seed=42` 和 `response_format=file` 顺序测试 256x256、512x512、1024x1024：
+在同一服务上使用 `seed=42`、`num_inference_steps=50` 和 `response_format=file` 顺序测试 256x256、512x512、1024x1024：
 
-| 分辨率 | 结果 | 服务端时间 |
-|---|---|---:|
-| 256x256 | 500；分辨率检查拒绝，未进入推理 | 0.0031 s |
-| 512x512 | 500；分辨率检查拒绝，未进入推理 | 0.0022 s |
-| 1024x1024 | 200；PNG 成功输出 | 35.4095 s |
+| 分辨率 | 结果 | 服务端时间 | 客户端总耗时 |
+|---|---|---:|---:|
+| 256x256 | 200；PNG，256x256，138,294 bytes | 37.8345 s | 42.4204 s |
+| 512x512 | 200；PNG，512x512，529,403 bytes | 15.4046 s | 15.4158 s |
+| 1024x1024 | 200；PNG，1024x1024，2,117,127 bytes | 35.5721 s | 35.6047 s |
 
-1024x1024 的客户端总耗时为 35.4413 s。当前第一阶段 FLUX.3 runner 只支持 checkpoint 默认分辨率，因此 256x256 和 512x512 暂不能用于性能比较。
+当前客户端可以通过 `width` 和 `height` 指定输出长宽，但两者必须是 16 的倍数。256x256 首次请求包含动态 shape/kernel 编译；编译结果保存在 `/local/lnn/fluxcache`，后续应单独进行热态测试。
+
+本次实现对应 `tt-metal` 分支 `flux-3-image-klein` 的 commit `4cccb4584f`。
+
+### 2026-11-04：每种分辨率连续 4 次测试
+
+为排除首次动态 kernel 编译影响，每种分辨率连续请求 4 次，丢弃第 1 次，取第 2～4 次客户端 `curl` 总耗时平均值：
+
+| 分辨率 | 第1次 | 第2次 | 第3次 | 第4次 | 后3次平均 |
+|---|---:|---:|---:|---:|---:|
+| 256×256 | 11.2110 s | 11.1677 s | 11.1281 s | 11.2084 s | **11.1680 s** |
+| 512×512 | 15.4146 s | 15.3210 s | 15.4079 s | 15.3293 s | **15.3528 s** |
+| 1024×1024 | 38.4966 s | 38.4960 s | 38.5879 s | 38.5125 s | **38.5322 s** |
+
+12 次请求全部 HTTP 200。热态结果符合分辨率增长趋势；此前 256×256 的 42.4204 秒包含首次动态 shape/kernel 编译，不能作为热态性能数据。
 
 | 工作项 | 状态 | 证据/实现位置 |
 |---|---|---|
@@ -1128,3 +1143,49 @@ VAE_MAPPING_V3_OK {'source_tensors': 251}
 ```
 
 三次容器运行均为 `STATUS=0`。这证明当前 v3 镜像内的本地源码可以在真实 Blackhole 设备上完成三类模型组件的权重转换；仍未证明完整 prompt → denoise → VAE → PNG 的端到端 T2I 运行。
+
+## 2026-11-04 双模型质量修复后的当前状态
+
+早期章节保留了制定计划和逐步 bring-up 时的历史状态。当前真实状态以本节为准。
+
+### 两套模型和切换方式
+
+| 变体 | 模型目录 | 默认推理参数 | 状态 |
+|---|---|---|---|
+| Base | `/local/models/flux-3-image-klein-base` | 50 steps、CFG 3.5 | 单芯片 T2I 已实现并验证 |
+| Distilled | `/local/models/flux-3-image-klein` | 16 steps、无 CFG、flow-map | 单芯片 T2I 已实现并验证 |
+
+模型统一从宿主机 `/local/models` 只读挂载。`Flux3Config.from_checkpoint()` 根据 `config.json` 自动识别 `flow_map`，不维护两份 pipeline。Base 和 Distilled 使用不同 TTNN cache 名，避免交叉复用转换权重。
+
+### 质量问题修复
+
+`a black bird` 生成蓝色块的主要根因是 SwiGLU 半区顺序不一致：checkpoint 是 `[gate | up]`，TTNN fused loader 期望 `[up | gate]`。已经在 `Flux3Transformer._block_state()` 中交换两半。
+
+完整排查记录：
+
+```text
+docs/FLUX3_IMAGE_KLEIN_TT_QUALITY_DEBUG.md
+```
+
+### 验证结果
+
+| 变体 | 请求 | 耗时 | 结果 |
+|---|---|---:|---|
+| Base | `a black bird`、1024×1024、50 steps、CFG 3.5、seed 42 | 68.37 s | 生成语义正确的黑鸟 |
+| Distilled | `a black bird`、1024×1024、16 steps、seed 42 | 17.45 s | 生成语义正确的黑鸟 |
+
+### 当前完成度
+
+| 工作项 | 状态 | 说明 |
+|---|---|---|
+| Base 单芯片 T2I | 已完成 | prompt → Qwen3-VL → 50-step CFG denoise → VAE → 图片 |
+| Distilled 单芯片 T2I | 已完成 | prompt → Qwen3-VL → 16-step flow-map denoise → VAE → 图片 |
+| API 参数 | 已完成 | 可指定 prompt、steps、seed、width、height；Base 可指定 guidance |
+| `response_format=file` | 已完成 | 单图直接返回 PNG/JPEG |
+| 两模型独立 cache | 已完成 | Base/Distilled cache 名分离 |
+| 2/4 芯片并行 | 暂缓 | 按当前范围不实施 |
+| Golden Data 逐层对齐 | 暂缓 | 按当前范围不实施 |
+| 32 worker 首次 cache 创建 | 未完成 | 需预生成 cache 或增加跨进程锁和原子发布 |
+| kernel/trace/layout 专项优化 | 未开始 | 后续 profiling 项目 |
+
+当前 `flux3-media-server-test` 运行 Distilled 模型 `/local/models/flux-3-image-klein`，使用单 worker 和一个芯片。切换 Base 时只需更换模型路径并使用对应 cache，无需复制权重或编写第二套实现。

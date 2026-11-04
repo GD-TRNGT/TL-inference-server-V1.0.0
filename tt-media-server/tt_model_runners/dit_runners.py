@@ -523,14 +523,23 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         request = requests[0]
         height = request.height or 1024
         width = request.width or 1024
-        steps = int(request.num_inference_steps or 20)
+        steps = int(request.num_inference_steps or self.pipeline.config.default_steps)
+        guidance = None
+        if not self.pipeline.config.flow_map:
+            requested_guidance = getattr(request, "guidance_scale", None)
+            guidance = float(
+                self.pipeline.config.default_guidance
+                if requested_guidance is None
+                else requested_guidance
+            )
         flux_request = Flux3T2IRequest(
             prompt=request.prompt,
+            negative_prompt=request.negative_prompt or "",
             height=height,
             width=width,
             steps=steps,
             seed=int(request.seed or 0),
-            guidance=float(getattr(request, "guidance_scale", 3.5)),
+            guidance=guidance,
         )
         return [
             self.pipeline.run(

@@ -14,6 +14,9 @@
 - `tt-media-server` 的 FLUX.3 runner 和 `/v1/images/generations` API；
 - 32 个单芯片 worker 启动、warmup 和真实请求；
 - 64 个并发 T2I 请求，64/64 成功，并确认 worker 0～31 全部实际处理请求。
+- Base 与 Distilled 两套 `/local/models` 权重的自动识别、独立缓存和单芯片 T2I；
+- 修复 FLUX.3 checkpoint 与 TTNN fused SwiGLU 的权重半区顺序不一致问题；
+- 使用 `a black bird` 分别完成 Base 50-step 和 Distilled 16-step 的真实语义验证。
 
 当前明确暂缓或未完成：
 
@@ -21,6 +24,7 @@
 - 与 PyTorch/vLLM/官方参考实现的逐层精度对齐；
 - kernel、layout、trace、内存和吞吐专项优化；
 - 服务重启后的历史 image job 恢复和独立图片下载接口。
+- 32 worker 首次同时创建同一模型转换缓存时的跨进程锁和原子发布。
 
 已完成的图片异步任务 API、任务状态管理和 cancel 语义见第 19 节。本文件只描述真实代码、真实修改、真实验证和当前状态，不把早期失败结论当作当前状态。
 
@@ -31,7 +35,8 @@
 ```text
 机器：10.12.11.2
 硬件：Blackhole Galaxy，32 个芯片
-模型：/local/models/flux-3-image-klein-base
+模型（Base）：/local/models/flux-3-image-klein-base
+模型（Distilled）：/local/models/flux-3-image-klein
 持久化缓存：/local/lnn/fluxcache
 服务容器：flux3-media-server-test
 镜像：tl-inference-server:flux-3-image-klein-local-20261103-v5
@@ -41,8 +46,8 @@
 模型权重没有复制进 Docker image，而是运行时只读挂载：
 
 ```text
-/local/models/flux-3-image-klein-base
-  -> /local/models/flux-3-image-klein-base:ro
+/local/models
+  -> /local/models:ro
 ```
 
 缓存目录保存：
@@ -791,20 +796,135 @@ working tree clean
 - matmul blocking、trace、layout、功耗和内存峰值专项优化；
 - 服务重启后的历史 image job 恢复和独立下载接口。
 
-## 22. 2026-11-04：50 步分辨率请求测试
+## 22. 2026-11-04：实现客户端自定义分辨率
 
-测试条件：11.2 的 `flux3-media-server-test`，同步 `/v1/images/generations`，相同 prompt、`seed=42`、`num_inference_steps=50`、`response_format=file`、PNG 输出。
+### 22.1 修改位置和作用
 
-| 分辨率 | HTTP 结果 | 服务端处理时间 | 客户端总耗时 | 结果 |
-|---|---:|---:|---:|---|
-| 256x256 | 500 | 0.0031 s | 0.0066 s | 未执行推理；当前第一阶段 runner 只支持 checkpoint 默认分辨率 |
-| 512x512 | 500 | 0.0022 s | 0.0044 s | 未执行推理；同上 |
-| 1024x1024 | 200 | 35.4095 s | 35.4413 s | 成功生成 PNG，1024x1024，2,117,127 bytes |
-
-256x256 和 512x512 的失败发生在 worker 分辨率检查阶段，错误为：
+修改文件：
 
 ```text
-the first milestone supports only the checkpoint default resolution
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/t2i_contract.py
 ```
 
-因此这两个耗时不是推理耗时。当前可测的 1024x1024、50 步推理时间约为 **35.41 秒**（客户端观测约 **35.44 秒**）。
+修改 `Flux3T2IRequest.validate()`：删除必须等于 checkpoint 默认 1024×1024 的判断，增加正数校验，并要求宽高都是 `config.vae_scale_factor * config.patch_size` 的整数倍。当前配置为 `8 * 2 = 16`，所以客户端宽高必须是 **16 的倍数**。
+
+这样既允许动态 shape，又能确保 VAE 下采样后得到完整 latent patch，避免后续 Transformer 或 VAE 处理不完整 tile。
+
+### 22.2 客户端请求示例
+
+```bash
+curl --fail-with-body -sS http://127.0.0.1:8000/v1/images/generations \\
+  -H 'Content-Type: application/json' \\
+  -d '{"prompt":"a small red cube on a white table","response_format":"file","image_return_format":"PNG","width":512,"height":768,"num_inference_steps":50,"seed":42}' \\
+  -o output.png
+```
+
+可用示例包括 `256×256`、`512×512`、`1024×1024` 和 `768×1024`；例如 `250×256` 会在请求校验阶段被拒绝，因为 250 不是 16 的倍数。
+
+### 22.3 11.2 真实验证
+
+测试服务为 10.12.11.2 上的 `flux3-media-server-test`，使用单芯片 `(1,1)` mesh、同步 `/v1/images/generations`、相同 prompt、`seed=42`、`num_inference_steps=50`、`response_format=file` 和 PNG 输出。
+
+| 分辨率 | HTTP | 服务端处理时间 | 客户端总耗时 | 输出 |
+|---|---:|---:|---:|---|
+| 256×256 | 200 | 37.8345 s | 42.4204 s | PNG，256×256，138,294 bytes |
+| 512×512 | 200 | 15.4046 s | 15.4158 s | PNG，512×512，529,403 bytes |
+| 1024×1024 | 200 | 35.5721 s | 35.6047 s | PNG，1024×1024，2,117,127 bytes |
+
+256×256 的客户端时间包含首次动态 shape/kernel 编译；日志中出现对应动态矩阵 shape 和 kernel 编译信息。编译缓存位于 `/local/lnn/fluxcache`，后续相同 shape 请求应单独进行热态测试。
+
+### 22.4 提交记录
+
+```text
+tt-metal branch: flux-3-image-klein
+tt-metal commit: 4cccb4584f Support client-defined FLUX3 T2I resolutions
+```
+
+## 23. 2026-11-04：每种分辨率连续 4 次热态测试
+
+为排除动态 kernel 首次编译影响，对每种分辨率连续请求 4 次，使用相同 prompt、`seed=42`、`num_inference_steps=50` 和 PNG 文件响应。第 1 次作为预热，不计入平均值；平均值取第 2～4 次客户端 `curl` 总耗时。
+
+| 分辨率 | 第1次 | 第2次 | 第3次 | 第4次 | 后3次平均 |
+|---|---:|---:|---:|---:|---:|
+| 256×256 | 11.2110 s | 11.1677 s | 11.1281 s | 11.2084 s | **11.1680 s** |
+| 512×512 | 15.4146 s | 15.3210 s | 15.4079 s | 15.3293 s | **15.3528 s** |
+| 1024×1024 | 38.4966 s | 38.4960 s | 38.5879 s | 38.5125 s | **38.5322 s** |
+
+三种分辨率的 12 次请求均返回 HTTP 200，并生成了对应尺寸的 PNG。热态结果符合预期：256×256 < 512×512 < 1024×1024。之前 256×256 的 42.4204 秒是首次动态 shape/kernel 编译与推理的合计时间，不应与热态 512×512 直接比较。
+
+## 24. 2026-11-04：修复 Prompt 语义错误并兼容 Base/Distilled
+
+完整的问题现象、排查顺序、代码根因和验证记录见 `docs/FLUX3_IMAGE_KLEIN_TT_QUALITY_DEBUG.md`。
+
+### 24.1 问题和根因
+
+在端到端 pipeline、HTTP API 和图片文件输出均成功的情况下，提示词 `a black bird` 生成的是蓝色块或无语义纹理。主要根因位于：
+
+```text
+/local/lnn/tt-metal/models/tt_dit/models/transformers/transformer_flux3.py
+Flux3Transformer._block_state()
+```
+
+FLUX.3 checkpoint 的 `mlp_in.weight` 保存为 `[gate | up]`，共用 TTNN fused SwiGLU loader 期望 `[up | gate]`，使 15 个 mode block 和 28 个 single block 的 FFN 都计算错误。
+
+修复代码：
+
+```python
+mlp_gate, mlp_up = reader.get_tensor(f"{prefix}.mlp_in.weight").chunk(2, dim=0)
+"ff.ff1.weight": torch.cat((mlp_up, mlp_gate), dim=0)
+```
+
+交换只发生在 FLUX.3 checkpoint 映射边界，不修改 checkpoint 文件和通用 SwiGLU 层。
+
+### 24.2 双模型实现
+
+两套模型都位于 `/local/models`：
+
+| 变体 | 路径 | 默认行为 |
+|---|---|---|
+| Base | `/local/models/flux-3-image-klein-base` | 50 steps、CFG 3.5、`flow_map=false` |
+| Distilled | `/local/models/flux-3-image-klein` | 16 steps、无 CFG、`flow_map=true` |
+
+`flux3_config.py` 根据 `config.json` 自动识别变体，并校验 Distilled 的 `ref_time_in` 权重。转换 cache 分别命名为 `flux-3-image-klein-base` 和 `flux-3-image-klein-distilled`。
+
+### 24.3 同时修正的实现偏差
+
+- 初始噪声按 `[N,H*W,128]` token 顺序生成并执行 BF16 舍入；
+- Qwen hidden-state 层号从 HF `[4,8,...,32]` 映射到 decoder `[3,7,...,31]`；
+- tokenizer 使用真实 `pad_token_id` 和 generation prompt；
+- AdaLN、timestep、flow-shift scheduler 和四轴 RoPE 与 FLUX.3 定义对齐；
+- Base 执行 negative prompt/CFG，Distilled 加载 `ref_time_in` 并执行无 CFG flow-map 路径；
+- server 使用模型配置的默认步数，不再固定默认 20 步。
+
+涉及文件：
+
+```text
+/local/lnn/tt-metal/models/tt_dit/models/transformers/transformer_flux3.py
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_components.py
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_config.py
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_prompt_encoder.py
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/sampling.py
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/t2i_contract.py
+/local/lnn/TL-inference-server/tt-media-server/tt_model_runners/dit_runners.py
+```
+
+### 24.4 真实质量验证
+
+| 模型 | 请求 | 耗时 | 结果 |
+|---|---|---:|---|
+| Base | `a black bird`、1024×1024、50 steps、CFG 3.5、seed 42 | 68.37 s | 生成黑鸟 |
+| Distilled | `a black bird`、1024×1024、16 steps、无 CFG、seed 42 | 17.45 s | 生成黑鸟 |
+
+输出 SHA256：
+
+```text
+Base:      c268566ea53a9eec50143e87ec673d9916f491f06c8f74cd22f41a07df9ebf88
+Distilled: 148d521f8b569880379c7bef7019106f1d3a6e28d2b0a5e1ae6fb4fb7cc5da58
+```
+
+### 24.5 当前限制
+
+32 个 worker 首次启动时会同时转换和写入同一模型 cache，造成严重 I/O 竞争。当前质量回归使用单 worker 完成。恢复 32 worker 前，应先由单进程预生成 Base 和 Distilled cache，或实现跨进程锁、临时目录写入和原子 rename。
+
+当前 `flux3-media-server-test` 运行 Distilled 模型 `/local/models/flux-3-image-klein`，单 worker、单芯片。切换到 Base 只需要更换模型路径并使用对应 cache。
