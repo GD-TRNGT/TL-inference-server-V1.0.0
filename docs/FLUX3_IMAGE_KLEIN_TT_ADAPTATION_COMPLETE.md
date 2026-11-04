@@ -790,3 +790,21 @@ working tree clean
 - PyTorch/vLLM/官方实现的逐层 Golden Data 精度对齐；
 - matmul blocking、trace、layout、功耗和内存峰值专项优化；
 - 服务重启后的历史 image job 恢复和独立下载接口。
+
+## 22. 2026-11-04：50 步分辨率请求测试
+
+测试条件：11.2 的 `flux3-media-server-test`，同步 `/v1/images/generations`，相同 prompt、`seed=42`、`num_inference_steps=50`、`response_format=file`、PNG 输出。
+
+| 分辨率 | HTTP 结果 | 服务端处理时间 | 客户端总耗时 | 结果 |
+|---|---:|---:|---:|---|
+| 256x256 | 500 | 0.0031 s | 0.0066 s | 未执行推理；当前第一阶段 runner 只支持 checkpoint 默认分辨率 |
+| 512x512 | 500 | 0.0022 s | 0.0044 s | 未执行推理；同上 |
+| 1024x1024 | 200 | 35.4095 s | 35.4413 s | 成功生成 PNG，1024x1024，2,117,127 bytes |
+
+256x256 和 512x512 的失败发生在 worker 分辨率检查阶段，错误为：
+
+```text
+the first milestone supports only the checkpoint default resolution
+```
+
+因此这两个耗时不是推理耗时。当前可测的 1024x1024、50 步推理时间约为 **35.41 秒**（客户端观测约 **35.44 秒**）。
