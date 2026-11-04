@@ -15,14 +15,14 @@
 - 32 个单芯片 worker 启动、warmup 和真实请求；
 - 64 个并发 T2I 请求，64/64 成功，并确认 worker 0～31 全部实际处理请求。
 
-尚未完成：
+当前明确暂缓或未完成：
 
 - 2 芯片和 4 芯片 mesh 的权重分片、通信和性能验证；
 - 与 PyTorch/vLLM/官方参考实现的逐层精度对齐；
-- kernel、layout、trace、内存和吞吐优化；
-- 独立的异步任务 API、任务状态管理和 cancel 语义。
+- kernel、layout、trace、内存和吞吐专项优化；
+- 服务重启后的历史 image job 恢复和独立图片下载接口。
 
-本文件只描述真实代码、真实修改、真实验证和当前状态，不把早期失败结论当作当前状态。
+已完成的图片异步任务 API、任务状态管理和 cancel 语义见第 19 节。本文件只描述真实代码、真实修改、真实验证和当前状态，不把早期失败结论当作当前状态。
 
 ## 2. 实现环境和代码边界
 
@@ -81,6 +81,7 @@ FLUX.3 适配不是只修改 server 仓库。server 负责把请求送进 pipeli
   -> 32 个单芯片 worker warmup
   -> 单请求 HTTP T2I
   -> 64 个并发 HTTP T2I
+  -> 图片异步任务、轮询和 cancel
 ```
 
 以下各节按这个真实顺序说明每一步修改了什么、在哪个文件、如何验证以及结果是什么。
@@ -513,15 +514,16 @@ HTTP 200：64
 | `models/tt_dit/pipelines/flux3/test_sampling.py` | sampling 基础验证 |
 | `models/tt_dit/tests/flux3/test_config.py` | 配置校验测试 |
 
-### 17.3 当前工作树状态
+### 17.3 当前提交状态
 
-- TL-inference-server 的 FLUX.3 服务注册和 runner 修复仍有未提交工作树改动；
-- tt-metal 的 `pipeline_flux3.py` 仍有未提交 runner 兼容改动；
-- `flux3_prompt_encoder.py`、两个 T2I 测试脚本是当前工作树新增文件；
-- 已提交的历史 commit 包含 Transformer、权重映射、缓存、sampling 和早期验证实现；
-- 本文档记录的是当前工作树实际运行状态，不等于所有代码已经 commit。
+```text
+TL-inference-server：020af3de Add FLUX3 image async jobs and cancel API
+tt-metal：a3550fc781 Complete FLUX3 T2I pipeline integration
+分支：flux-3-image-klein
+工作树：clean
+```
 
-另外，`config/constants.py` 中存在一处与 FLUX.3 无关的 `SP_RUNNER` 设备 ID 改动，后续提交前应单独检查，避免把无关修改带入 FLUX.3 commit。
+两个 commit 均已在 10.12.11.2 本地仓库创建，尚未 push 到远端 origin。
 
 ## 18. 尚未完成和下一步
 
@@ -607,3 +609,128 @@ mesh：(1,1)
 - [暂缓] 与 vLLM/PyTorch 的 Golden Data 精度对齐；
 - [未开始] 专项 matmul/trace/kernel 性能优化；
 - [未完成] 服务重启恢复、独立图片下载接口和长请求压力回归。
+
+## 20. 按实施步骤对应的文件变更索引
+
+本节是本文件的文件级索引。`修改`表示原有文件中增加或调整了 FLUX.3 逻辑；`新建`表示本次适配新增的文件。路径均以仓库根目录为基准。
+
+### 步骤 1：模型资产和配置校验
+
+| 类型 | 仓库 | 文件 | 作用 |
+|---|---|---|---|
+| 修改 | tt-metal | `models/tt_dit/pipelines/flux3/flux3_config.py` | 读取 checkpoint 配置、检查模型目录和权重资产 |
+| 修改 | tt-metal | `models/tt_dit/pipelines/flux3/flux3_components.py` | 根据同一模型根目录构造 DiT、Qwen3-VL 和 VAE 组件 |
+| 运行时输入 | 宿主机 | `/local/models/flux-3-image-klein-base` | 模型权重，不复制进镜像，运行时只读挂载 |
+
+### 步骤 2：Transformer 结构和 TTNN 前向
+
+| 类型 | 文件 | 作用 |
+|---|---|---|
+| 修改 | `models/tt_dit/models/transformers/transformer_flux3.py` | 定义 `Flux3TimeIn`、`Flux3ModeBlock`、`Flux3SingleBlock`、`Flux3Transformer` 及 forward |
+| 修改 | `models/tt_dit/blocks/attention_opt.py` | 调整 Blackhole 单芯片 attention、Q/K/V、layout 和 RoPE 执行 |
+| 修改 | `models/tt_dit/pipelines/flux3/__init__.py` | 导出 FLUX.3 pipeline 和组件 |
+| 验证 | `models/tt_dit/pipelines/flux3/test_one_step.py` | 在真实 `(1,1)` mesh 上执行一个 denoise/Transformer step |
+
+### 步骤 3：DiT 权重映射
+
+| 类型 | 文件/目录 | 作用 |
+|---|---|---|
+| 修改 | `transformer_flux3.py` 的 `_block_state()` | 将单个 mode/single block 的源权重组织成目标 block 状态 |
+| 修改 | `transformer_flux3.py` 的 `_flux3_state_dict()` | 处理 FLUX.3 safetensors key 命名和 tensor 形状 |
+| 修改 | `transformer_flux3.py` 的 `load_flux3_checkpoint()` | 将 357 个源 tensor 映射到 TTNN 参数 |
+| 运行时缓存 | `/local/lnn/fluxcache/tt_dit_cache` | 保存转换后的 TT-DiT 权重，避免重复转换 |
+
+验证结果：15 个 mode block（text/image/image-condition 各 5 个）、28 个 single block、357 个源 tensor、271 个 TTNN 参数条目。
+
+### 步骤 4：Qwen3-VL prompt encoder
+
+| 类型 | 文件 | 作用 |
+|---|---|---|
+| 新建 | `models/tt_dit/pipelines/flux3/flux3_prompt_encoder.py` | tokenizer、chat template、M-RoPE、Qwen3-VL 文本编码入口 |
+| 修改 | `models/tt_dit/pipelines/flux3/flux3_components.py` | 加载 Qwen3-VL 36 层 encoder 及其权重 |
+| 新建 | `models/tt_dit/pipelines/flux3/test_qwen_prompt_t2i.py` | 验证文本到 prompt embedding 的路径 |
+| 缓存 | `/local/lnn/fluxcache/hf`、`/local/lnn/fluxcache/torch` | tokenizer、HF 和 PyTorch 相关缓存 |
+
+### 步骤 5：VAE decode
+
+| 类型 | 文件 | 作用 |
+|---|---|---|
+| 修改 | `models/tt_dit/pipelines/flux3/flux3_components.py` | 读取 VAE decoder 配置和 safetensors 权重 |
+| 修改 | `models/tt_dit/pipelines/flux3/pipeline_flux3.py` | 将最终 latent 送入 VAE，并转换为 PIL/PNG |
+| 验证 | `models/tt_dit/pipelines/flux3/test_pipeline_primitives.py` | 验证 VAE 和 pipeline 基础组件 |
+
+验证结果：VAE 251 个源 tensor 加载通过。
+
+### 步骤 6：latent、采样和多步 denoise
+
+| 类型 | 文件 | 作用 |
+|---|---|---|
+| 修改 | `models/tt_dit/pipelines/flux3/sampling.py` | latent 初始化、patchify/unpatchify、RoPE、schedule、time embedding、Euler step |
+| 新建 | `models/tt_dit/pipelines/flux3/t2i_contract.py` | 定义 T2I 请求参数和 pipeline 输入输出契约 |
+| 修改 | `models/tt_dit/pipelines/flux3/pipeline_flux3.py` | 串联 prompt embedding、latent、denoise loop、unpatchify 和 VAE |
+| 验证 | `models/tt_dit/pipelines/flux3/test_sampling.py` | 验证采样原语和多步更新 |
+| 验证 | `models/tt_dit/pipelines/flux3/test_external_prompt_t2i.py` | 使用外部 prompt embedding 运行 T2I |
+
+### 步骤 7：完整 pipeline
+
+核心入口是：
+
+```text
+models/tt_dit/pipelines/flux3/pipeline_flux3.py:Flux3T2IPipeline.run()
+```
+
+该入口完成：
+
+1. 接收 prompt、height、width、steps、seed、guidance；
+2. 调用 Qwen3-VL 或读取外部 prompt embedding；
+3. 根据 seed 初始化 latent；
+4. 执行指定次数 denoise；
+5. 执行 VAE decode；
+6. 输出 PIL image，供 server runner 编码返回。
+
+### 步骤 8：缓存和 Docker 镜像
+
+| 类型 | 文件/目录 | 作用 |
+|---|---|---|
+| 修改 | `TL-inference-server/tt-media-server/Dockerfile` | 使用本地 tt-metal BuildKit context；不 clone 远端 tt-metal；不复制 FLUX.3 权重 |
+| 修改 | Dockerfile cache ENV | 设置 `FLUXCACHE_DIR`、`TT_DIT_CACHE_DIR`、`TT_METAL_CACHE`、HF/Torch/XDG/TMP cache |
+| 修改 | Dockerfile image job ENV | 设置 `IMAGE_JOB_OUTPUT_DIR=/local/fluxcache/image-jobs` |
+| 宿主机 | `/local/lnn/fluxcache` | 持久化权重转换、JIT/kernel、文本 encoder 和异步图片 job 结果 |
+
+### 步骤 9：tt-media-server 模型注册和 runner
+
+| 类型 | 文件 | 作用 |
+|---|---|---|
+| 修改 | `tt-media-server/config/constants.py` | 注册 model、runner、服务类型、`(1,1)` mesh 和 32 个单芯片 worker；增加 `JobTypes.IMAGE` |
+| 修改 | `tt-media-server/open_ai_api/models.py` | 将 FLUX.3 请求接入图片请求模型 |
+| 修改 | `tt-media-server/tt_model_runners/runner_fabric.py` | 将 runner 名称映射到 `TTFlux3ImageKleinRunner` |
+| 修改 | `tt-media-server/tt_model_runners/dit_runners.py` | 创建 pipeline、读取 `FLUX3_MODEL_ROOT`、传入请求参数并返回 image list |
+| 修改 | `tt-media-server/model_services/image_service.py` | 图片后处理，以及异步任务结果 JSON 持久化 |
+| 修改 | `tt-media-server/open_ai_api/image.py` | 同步、异步 submit、poll、cancel、delete API |
+
+### 步骤 10：worker、HTTP 和并发验证
+
+| 验证 | 结果 |
+|---|---|
+| 32 个 worker warmup | 32/32 ready，每个 worker 使用一个芯片，`(1,1)` mesh |
+| 单请求 T2I | HTTP 200，12-step 约 12.26 秒 |
+| 64 并发 T2I | 64/64 HTTP 200，worker 0～31 全部实际处理请求 |
+| 异步图片提交 | HTTP 202，返回 `job_type=image` 和 job id |
+| 异步 cancel | 50-step 任务 `queued -> cancelling -> cancelled` |
+| 异步完成 | 12-step 任务 `completed`，轮询返回 1 张图片 |
+
+### 步骤 11：commit 和当前边界
+
+```text
+TL-inference-server commit 020af3de
+tt-metal commit a3550fc781
+branch flux-3-image-klein
+working tree clean
+```
+
+当前不在本轮范围内：
+
+- 2 芯片/4 芯片 mesh、权重分片和 CCL 通信；
+- PyTorch/vLLM/官方实现的逐层 Golden Data 精度对齐；
+- matmul blocking、trace、layout、功耗和内存峰值专项优化；
+- 服务重启后的历史 image job 恢复和独立下载接口。
