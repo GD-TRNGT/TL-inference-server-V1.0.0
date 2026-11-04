@@ -1057,7 +1057,7 @@ curl -fS http://127.0.0.1:8000/v1/images/generations \\
   -o output.png
 ```
 
-该项只涉及 `TL-inference-server` API 层，不涉及 `tt-metal` 算子或权重实现。当前已完成代码和语法检查，真实 HTTP 验证待在服务镜像中验证。
+该项只涉及 `TL-inference-server` API 层，不涉及 `tt-metal` 算子或权重实现。已在 11.2 的 `flux3-media-server-test` 容器上完成真实 HTTP 验证：默认分辨率、12 步、PNG 文件响应返回 HTTP 200；输出为 1024x1024 PNG。当前 runner 对自定义 256x256 分辨率仍有限制，属于模型第一阶段分辨率边界。
 
 | 工作项 | 状态 | 证据/实现位置 |
 |---|---|---|

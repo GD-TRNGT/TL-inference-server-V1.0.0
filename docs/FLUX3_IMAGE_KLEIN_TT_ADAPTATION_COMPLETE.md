@@ -755,8 +755,7 @@ response_format=file    → Base64 解码为二进制图片
 ```bash
 curl -fS http://127.0.0.1:8000/v1/images/generations \\
   -H 'Content-Type: application/json' \\
-  -d '{"prompt":"a red car","response_format":"file",'\\
-'"image_return_format":"PNG","num_inference_steps":20}' \\
+  -d '{"prompt":"a red car","response_format":"file","image_return_format":"PNG","num_inference_steps":20}' \\
   -o output.png
 ```
 
@@ -772,10 +771,14 @@ curl -fS http://127.0.0.1:8000/v1/images/generations \\
 - `response_format` 只接受 `b64_json` 或 `file`。
 - 单图返回 `Content-Type: image/png` 或 `image/jpeg`。
 - 多图返回 `Content-Type: application/zip`。
-- 11.2 当前环境缺少可用的 FastAPI/pytest 运行环境，因此尚未完成真实 HTTP 端到端验证；需要在实际服务镜像中重建或挂载代码后验证。
+- 11.2 已通过真实 HTTP 端到端验证：使用现有 `flux3-media-server-test` 容器的源码挂载，重启 Uvicorn worker 后发送 12-step 请求。
+- 验证请求省略自定义分辨率，使用 FLUX.3 当前 checkpoint 默认分辨率。
+- 返回结果：HTTP `200`、`Content-Type: image/png`、`Content-Disposition: attachment; filename="image.png"`。
+- 输出文件：`/tmp/tt-file-response.png`，PNG，`1024 x 1024`，`2,114,612` bytes。
+- 额外验证：自定义 `256 x 256` 会被当前 FLUX.3 第一阶段 runner 拒绝，这是模型分辨率限制，不是文件响应实现问题。
 
 ```text
-TL-inference-server commit 020af3de
+TL-inference-server commit 8ac20508
 tt-metal commit a3550fc781
 branch flux-3-image-klein
 working tree clean
