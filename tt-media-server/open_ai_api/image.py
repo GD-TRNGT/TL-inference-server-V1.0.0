@@ -2,16 +2,20 @@
 #
 # SPDX-FileCopyrightText: © 2025 Tenstorrent USA, Inc.
 
+import base64
+import binascii
+import io
+import json
+import os
+import zipfile
+
 from config.constants import ModelRunners
 from config.settings import settings
 from domain.image_edit_request import ImageEditRequest
 from domain.image_generate_request import ImageGenerateRequest
 from domain.image_to_image_request import ImageToImageRequest
-import json
-import os
-
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Security, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, Response
 from model_services.base_service import BaseService
 from model_services.image_service import ImageService
 from resolver.service_resolver import service_resolver
@@ -28,6 +32,74 @@ _LORA_CHUNK_BYTES = 1024 * 1024
 _LORA_MAX_SCALE = 2.0
 # safetensors caps its JSON header at 100 MB; anything larger is not a real file.
 _SAFETENSORS_MAX_HEADER_BYTES = 100 * 1024 * 1024
+
+
+def _image_bytes_from_base64(payload: str) -> bytes:
+    """Decode a runner image payload for ``response_format=file``.
+
+    Runners return raw Base64 today, but accepting a data URL here keeps the
+    HTTP boundary tolerant of both representations. Whitespace is removed
+    because ImageManager historically uses ``base64.encodebytes``.
+    """
+    if payload.startswith("data:"):
+        try:
+            payload = payload.split(",", 1)[1]
+        except IndexError as e:
+            raise ValueError("invalid image data URL") from e
+    try:
+        return base64.b64decode("".join(payload.split()), validate=True)
+    except (ValueError, binascii.Error) as e:
+        raise ValueError("runner returned invalid Base64 image data") from e
+
+
+def _image_media_type(request: ImageGenerateRequest) -> tuple[str, str]:
+    image_format = (request.image_return_format or "JPEG").upper()
+    if image_format == "PNG":
+        return "image/png", "png"
+    if image_format == "JPEG":
+        return "image/jpeg", "jpg"
+    raise HTTPException(
+        status_code=422,
+        detail="image_return_format must be 'JPEG' or 'PNG' for file responses",
+    )
+
+
+def _build_image_response(result: list[str], request: ImageGenerateRequest, elapsed: float | None = None):
+    """Return legacy JSON or direct image bytes according to ``response_format``.
+
+    One image is returned as its native media type. Multiple images are packed
+    into a ZIP because one HTTP response cannot have multiple image media types.
+    """
+    content = {"images": result}
+    if elapsed is not None:
+        content["generation_time"] = elapsed
+    if request.response_format != "file":
+        return JSONResponse(content=content)
+
+    if not result:
+        raise HTTPException(status_code=500, detail="image generation returned no images")
+    try:
+        image_bytes = [_image_bytes_from_base64(item) for item in result]
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    media_type, extension = _image_media_type(request)
+    if len(image_bytes) == 1:
+        return Response(
+            content=image_bytes[0],
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="image.{extension}"'},
+        )
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for index, data in enumerate(image_bytes, start=1):
+            zf.writestr(f"image_{index}.{extension}", data)
+    return Response(
+        content=archive.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="images.zip"'},
+    )
 
 
 def _check_safetensors(path: str) -> None:
@@ -93,7 +165,7 @@ async def generate_image(
         _t0 = _time.time()
         result = await service.process_request(image_generate_request)
         _elapsed = round(_time.time() - _t0, 2)
-        return JSONResponse(content={"images": result, "generation_time": _elapsed})
+        return _build_image_response(result, image_generate_request, _elapsed)
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -163,7 +235,7 @@ async def image_to_image(
     """
     try:
         result = await service.process_request(image_to_image_request)
-        return JSONResponse(content={"images": result})
+        return _build_image_response(result, image_to_image_request)
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -188,7 +260,7 @@ async def edit_image(
     """
     try:
         result = await service.process_request(image_edit_request)
-        return JSONResponse(content={"images": result})
+        return _build_image_response(result, image_edit_request)
     except HTTPException as e:
         raise e
     except Exception as e:

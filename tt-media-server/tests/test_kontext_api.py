@@ -132,6 +132,41 @@ def test_generate_returns_images(mock_service):
     assert code == 200 and body["images"] == [_B64]
 
 
+def test_generate_file_response_returns_png(mock_service):
+    req = ImageGenerateRequest.model_construct(
+        prompt="a red car",
+        num_inference_steps=28,
+        width=1024,
+        height=1024,
+        response_format="file",
+        image_return_format="PNG",
+    )
+    response = asyncio.run(
+        image_mod.generate_image(req, service=mock_service, api_key="k")
+    )
+    assert response.status_code == 200
+    assert response.media_type == "image/png"
+    assert response.headers["content-disposition"] == 'attachment; filename="image.png"'
+    assert bytes(response.body) == b"fake-png-bytes"
+
+
+def test_generate_defaults_to_json_base64(mock_service):
+    req = ImageGenerateRequest.model_construct(prompt="a red car")
+    response = asyncio.run(
+        image_mod.generate_image(req, service=mock_service, api_key="k")
+    )
+    code, body = _json(response)
+    assert code == 200
+    assert body["images"] == [_B64]
+
+
+def test_response_format_rejects_unknown_value():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ImageGenerateRequest(prompt="a red car", response_format="url")
+
+
 def test_lora_apply_records_active_and_rebuilds(mock_service, _tmp_lora_dir):
     resp = asyncio.run(
         image_mod.lora_apply(

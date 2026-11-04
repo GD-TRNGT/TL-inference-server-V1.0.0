@@ -721,6 +721,59 @@ models/tt_dit/pipelines/flux3/pipeline_flux3.py:Flux3T2IPipeline.run()
 
 ### 步骤 11：commit 和当前边界
 
+## 21. 2026-11-04：实现 `response_format=file`
+
+### 21.1 实现文件
+
+本次只修改 `TL-inference-server`，`tt-metal` 不需要修改：
+
+| 文件 | 修改内容 |
+|---|---|
+| `tt-media-server/domain/image_generate_request.py` | 在 `BaseImageRequest` 增加 `response_format`，支持 `b64_json`（默认）和 `file`。 |
+| `tt-media-server/open_ai_api/image.py` | 增加 Base64 解码、媒体类型选择、单图直接返回、多图 ZIP 打包逻辑。 |
+| `tt-media-server/tests/test_kontext_api.py` | 增加文件响应、默认 Base64 响应和非法格式校验。 |
+
+### 21.2 请求处理流程
+
+```text
+客户端 POST /v1/images/generations
+        ↓
+ImageGenerateRequest.response_format
+        ↓
+service.process_request() 返回 Base64 图片列表
+        ↓
+response_format=b64_json → 原有 JSON：{"images": [...], "generation_time": ...}
+response_format=file    → Base64 解码为二进制图片
+                         → 1 张：直接返回 image/png 或 image/jpeg
+                         → 多张：打包返回 images.zip
+```
+
+### 21.3 使用方式
+
+单张 PNG：
+
+```bash
+curl -fS http://127.0.0.1:8000/v1/images/generations \\
+  -H 'Content-Type: application/json' \\
+  -d '{"prompt":"a red car","response_format":"file",'\\
+'"image_return_format":"PNG","num_inference_steps":20}' \\
+  -o output.png
+```
+
+默认 Base64 行为不变：
+
+```json
+{"prompt":"a red car","response_format":"b64_json"}
+```
+
+### 21.4 当前验证状态
+
+- 本地和 11.2 上的三个 Python 文件已通过 Python AST/字节码语法检查。
+- `response_format` 只接受 `b64_json` 或 `file`。
+- 单图返回 `Content-Type: image/png` 或 `image/jpeg`。
+- 多图返回 `Content-Type: application/zip`。
+- 11.2 当前环境缺少可用的 FastAPI/pytest 运行环境，因此尚未完成真实 HTTP 端到端验证；需要在实际服务镜像中重建或挂载代码后验证。
+
 ```text
 TL-inference-server commit 020af3de
 tt-metal commit a3550fc781

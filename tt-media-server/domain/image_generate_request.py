@@ -2,7 +2,7 @@
 #
 # SPDX-FileCopyrightText: © 2025 Tenstorrent USA, Inc.
 
-from typing import List, Optional, Tuple, Union
+from typing import List, Literal, Optional, Tuple, Union
 
 from config.settings import get_settings
 from domain.base_request import BaseRequest
@@ -25,6 +25,9 @@ class BaseImageRequest(BaseRequest):
     # Image output settings
     image_return_format: Optional[str] = Field(default="JPEG")
     image_quality: Optional[int] = Field(default=85, ge=50, le=100)
+    # Keep the existing JSON/Base64 response as the default. ``file`` returns
+    # the generated image bytes directly from the HTTP endpoint.
+    response_format: Literal["b64_json", "file"] = Field(default="b64_json")
 
     # Optional output resolution (width/height). Runners that support per-request
     # resolution (e.g. FLUX.1-Kontext) honor these; others ignore them.

@@ -1036,6 +1036,29 @@ tensor。由此可以确认 `/local/lnn/fluxcache` 已经真正承载转换缓�
 
 ## 2026-11-04 执行状态更新
 
+### 图片文件响应 API：`response_format=file`
+
+在现有图片生成 API 保持 JSON/Base64 兼容的前提下，新增文件响应路径：
+
+- 请求模型：`tt-media-server/domain/image_generate_request.py`
+  增加 `response_format: Literal["b64_json", "file"]`，默认仍为 `b64_json`。
+- API 处理：`tt-media-server/open_ai_api/image.py`
+  将 runner 返回的 Base64 图片解码为二进制；单张图片直接返回 PNG/JPEG，多张图片返回 ZIP。
+- 覆盖接口：`/v1/images/generations`、`/v1/images/image-to-image`、`/v1/images/edits`。
+- 测试：`tt-media-server/tests/test_kontext_api.py` 增加单图 PNG、默认 Base64、非法响应格式测试。
+
+示例：
+
+```bash
+curl -fS http://127.0.0.1:8000/v1/images/generations \\
+  -H 'Content-Type: application/json' \\
+  -d '{"prompt":"a red car","response_format":"file",'\\
+'"image_return_format":"PNG","num_inference_steps":20}' \\
+  -o output.png
+```
+
+该项只涉及 `TL-inference-server` API 层，不涉及 `tt-metal` 算子或权重实现。当前已完成代码和语法检查，真实 HTTP 验证待在服务镜像中验证。
+
 | 工作项 | 状态 | 证据/实现位置 |
 |---|---|---|
 | 单芯片完整 T2I | 已完成 | `pipeline_flux3.py`、`TTFlux3ImageKleinRunner`、HTTP 200 图片输出 |
