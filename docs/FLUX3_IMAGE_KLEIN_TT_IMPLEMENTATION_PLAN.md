@@ -5,7 +5,7 @@
 更新时间：2026-11-05
 开发仓库：/local/lnn/TL-inference-server
 开发分支：flux-3-image-klein
-当前功能基线：TL-inference-server `9ef4e5e03e9f466dd68e222462725577b70ece7b`；tt-metal `63d6c1b321194b7d670656b4d8bd3b40bc308176`
+当前功能基线：TL-inference-server `e46186a9160d48344ec1f706f6ff4efd6f6c53ba`；tt-metal `3ff5dc122dae38d173870cf5525e9ed96d877c33`
 
 本文基于当前仓库代码、10.12.11.2 的硬件信息以及已经检查过的 vLLM-Omni FLUX.3 实现整理。目标是在 TT-NN/TT-Metalium 上真正完成模型加载、推理、结果输出、精度对齐和性能优化，而不是只增加一个 API 名称。
 
@@ -23,11 +23,15 @@
 | `response_format=file` | 已支持 PNG/JPEG 文件响应 |
 | 图片异步、轮询、cancel | 已实现 |
 | 32 个单芯片 worker | 已启动并完成 200 请求测试 |
+| prompt encoder / Transformer / VAE 常驻 | 已实现；默认每 worker 加载一次 |
+| scheduler 缓存 | 已实现；按 `num_inference_steps` 复用 |
+| latent / CFG / Euler 设备端执行 | 已实现；denoise loop 不再逐步 D2H/H2D |
+| 内存不足回退 | 已实现；`FLUX3_COMPONENT_RESIDENCY=per_request` |
 | 2/4 芯片单请求并行 | 按当前范围暂缓 |
 | Golden Data 逐层数值对齐 | 按当前范围暂缓 |
 | 32 worker 首次共同创建 cache | 未解决；应预生成 cache 或增加跨进程锁 |
 
-2026-11-05 最新性能基线：Distilled、1024×1024、16 步、32 worker、200 个同时提交请求，200/200 成功，总耗时 132.499 秒，吞吐 1.5094 images/s，P50 78.752 秒，P95 121.740 秒，最大队列深度 168。worker 0～31 全部执行请求，每个处理 6～7 个。
+2026-11-05 最新性能基线：Distilled、1024×1024、16 步、32 worker、组件常驻和设备端 Euler，200 个同时提交请求 200/200 成功，总耗时 77.820 秒，吞吐 2.5700 images/s，平均响应 40.971 秒，P50 44.782 秒，P95 67.038 秒。优化前同口径为 132.499 秒和 1.5094 images/s。
 
 ## 1. 目标和现状
 
@@ -779,12 +783,12 @@ BF16、FP8、NVFP4 或其他量化路径必须分别建立 Golden Data，不能�
 
 ### 6.2 优先优化方向
 
-1. 内存和 layout：减少 latent、token 和权重的无效 layout 转换，这是单芯片阶段的首要优化方向。
+1. 内存和 layout：已完成初始 latent 单次 H2D、设备端 CFG/Euler 和 denoise latent 常驻；后续继续减少 token/layout 转换并评估设备端 FP32 accumulator。
 2. 跨芯片通信：单芯片阶段没有跨芯片通信；扩展到 2/4 芯片时，验证 tensor parallel、sequence parallel 和 collective。
 3. kernel 编译：固定 shape、dtype 和 steps，减少动态编译。
 4. trace：shape 稳定后启用，bring-up 阶段先关闭。
-5. encoder：判断 Qwen3-VL encoder 是否是端到端瓶颈，决定 CPU、TT 或混合执行。
-6. VAE：单独统计 decode 时间和峰值内存。
+5. encoder：已按 worker 常驻 TT；后续单独统计 encoder 时间并评估 trace 和 layout。
+6. VAE：已按 worker 常驻 TT；后续单独统计 decode 时间和峰值内存。
 7. 请求并发：第一版保持 max_batch_size=1，单请求稳定后再考虑批处理。
 8. 缓存：cache key 必须包含 dtype、shape、mesh 和模型版本。
 
@@ -796,8 +800,11 @@ BF16、FP8、NVFP4 或其他量化路径必须分别建立 Golden Data，不能�
 | 2026-11-04 | Distilled | 1/1 | 1024×1024 | 16 | 17.45 s，语义正确 |
 | 2026-11-05 | Distilled 预热 | 32/32 | 1024×1024 | 16 | 32/32 成功，22.587 s，1.4168 images/s |
 | 2026-11-05 | Distilled 压测 | 32/200 | 1024×1024 | 16 | 200/200 成功，132.499 s，1.5094 images/s，P95 121.740 s |
+| 2026-11-05 | Distilled 常驻+设备端 Euler | 1/1 | 1024×1024 | 16 | 4 次后 3 次平均 11.541 s，语义正确 |
+| 2026-11-05 | Distilled 常驻+设备端 Euler | 32/32 | 1024×1024 | 16 | 32/32 成功，12.123 s，2.6397 images/s |
+| 2026-11-05 | Distilled 常驻+设备端 Euler | 32/200 同时提交 | 1024×1024 | 16 | 200/200 成功，77.820 s，2.5700 images/s，P95 67.038 s |
 
-尚未拆分并记录 encoder、denoise、VAE、host/device copy 和 JPEG 编码的独立耗时；这些仍是下一轮 profiling 工作，而不是本次 200 请求吞吐测试的已完成项。
+组件常驻、schedule 缓存、设备端 CFG/Euler 和 denoise latent 常驻已经完成。尚未拆分并记录 encoder、Transformer 每步、VAE、最终 D2H 和 PNG/JPEG 编码的独立耗时；这些仍是下一轮 profiling 工作。
 
 ## 7. 测试计划
 
@@ -1208,6 +1215,47 @@ docs/FLUX3_IMAGE_KLEIN_TT_QUALITY_DEBUG.md
 | 2/4 芯片并行 | 暂缓 | 按当前范围不实施 |
 | Golden Data 逐层对齐 | 暂缓 | 按当前范围不实施 |
 | 32 worker 首次 cache 创建 | 未完成 | 需预生成 cache 或增加跨进程锁和原子发布 |
-| kernel/trace/layout 专项优化 | 未开始 | 后续 profiling 项目 |
+| kernel/trace/layout 专项优化 | 部分完成 | 已完成组件常驻、schedule 缓存、设备端 CFG/Euler/latent；更深层 blocking、trace、峰值内存仍待 profiling |
 
 该次质量修复验证使用单 worker。截至 2026-11-05，`flux3-media-server-test` 已运行 Distilled 模型的 32 个单芯片 worker，并完成 200 请求并发验证。切换 Base 时只需更换模型路径并使用对应 cache，无需复制权重或编写第二套实现。
+
+## 附录 G：2026-11-05 vLLM-Omni 同优先级性能优化完成状态
+
+本轮按以下顺序实施，详细代码和验证过程见适配记录第 27 节：
+
+| 优先级 | 工作项 | 状态 | 实现位置 |
+|---:|---|---|---|
+| 1 | 每 worker 常驻 prompt encoder / Transformer / VAE | 已完成 | `tt-media-server/tt_model_runners/dit_runners.py` |
+| 2 | 相同步数 scheduler 缓存 | 已完成 | `models/tt_dit/pipelines/flux3/pipeline_flux3.py` |
+| 3 | 初始 latent 只执行一次 H2D | 已完成 | `Flux3T2IPipeline.run_with_prompt_embeds()` |
+| 4 | Base CFG 保留在 TT 设备端 | 已完成 | `ttnn.subtract`、`ttnn.multiply_`、`ttnn.add_` |
+| 5 | Euler update 和 denoise latent 保留在 TT 设备端 | 已完成 | `ttnn.multiply_`、`ttnn.add_` |
+| 6 | 最终设备 latent 直接进入 VAE | 已完成 | `vae_decoder.preprocess_and_unpatchify(image_tt, ...)` |
+| 7 | 显存不足回退逐请求加载 | 已完成 | `FLUX3_COMPONENT_RESIDENCY=per_request` |
+| 8 | Docker 默认启用常驻模式 | 已完成 | `tt-media-server/Dockerfile` |
+
+真实验证：
+
+```text
+模型：/local/models/flux-3-image-klein（Distilled）
+请求：a black bird，1024x1024，16 steps，seed 42，PNG
+服务：32 个单芯片 worker
+组件重复加载事件：0
+worker error_count：0
+```
+
+| 场景 | 结果 |
+|---|---:|
+| 单请求后 3 次平均 | 11.541 s |
+| 32 请求 / 32 并发 | 12.123 s；2.6397 images/s |
+| 200 请求 / 32 并发 | 81.209 s；2.4628 images/s |
+| 200 请求 / 200 同时提交 | 77.820 s；2.5700 images/s；P95 67.038 s |
+
+与旧的 200 同时提交基线相比，总墙钟降低 41.3%，吞吐提升 70.3%。生成样图语义正确。当前 TT 设备端 Euler accumulator 为 BF16；后续精度工作应评估 FP32 accumulator，但不应直接恢复每个 denoise step 的 host/device 往返。
+
+功能提交：
+
+```text
+TL-inference-server e46186a9160d48344ec1f706f6ff4efd6f6c53ba
+tt-metal           3ff5dc122dae38d173870cf5525e9ed96d877c33
+```

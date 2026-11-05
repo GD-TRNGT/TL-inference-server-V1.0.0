@@ -11,10 +11,14 @@
 - DiT、Qwen3-VL Text Encoder、VAE Decoder 的权重读取和 TTNN 缓存；
 - 单芯片 `(1,1)` mesh 上的真实 Transformer 执行；
 - 多步 denoise、Qwen3-VL prompt 编码、VAE decode 和 PNG 输出；
+- 每个 worker 常驻 Qwen3-VL prompt encoder、FLUX.3 Transformer 和 VAE decoder，请求之间不再重复装载权重；
+- flow schedule 按步数缓存，初始 latent 只上传设备一次，CFG、Euler update 和整个 denoise latent 均保留在 TT 设备端；
+- 可用 `FLUX3_COMPONENT_RESIDENCY=per_request` 回退到原逐请求加载方式，默认值为 `resident`；
 - `tt-media-server` 的 FLUX.3 runner 和 `/v1/images/generations` API；
 - 32 个单芯片 worker 启动、warmup 和真实请求；
 - 64 个并发 T2I 历史回归请求，64/64 成功；
 - 2026-11-05 完成 200 个同时提交的 T2I 请求测试，200/200 成功，worker 0～31 全部参与且每个处理 6～7 个请求；
+- 2026-11-05 完成组件常驻和设备端 denoise 优化后，同口径 200 个同时提交请求总耗时从 132.499 秒降至 77.820 秒，吞吐从 1.5094 提升至 2.5700 images/s；
 - Base 与 Distilled 两套 `/local/models` 权重的自动识别、独立缓存和单芯片 T2I；
 - 修复 FLUX.3 checkpoint 与 TTNN fused SwiGLU 的权重半区顺序不一致问题；
 - 使用 `a black bird` 分别完成 Base 50-step 和 Distilled 16-step 的真实语义验证。
@@ -23,7 +27,7 @@
 
 - 2 芯片和 4 芯片 mesh 的权重分片、通信和性能验证；
 - 与 PyTorch/vLLM/官方参考实现的逐层精度对齐；
-- kernel、layout、trace、内存和吞吐专项优化；
+- 更深层的 kernel blocking、layout、trace、峰值内存和功耗专项优化；
 - 服务重启后的历史 image job 恢复和独立图片下载接口。
 - 32 worker 首次同时创建同一模型转换缓存时的跨进程锁和原子发布。
 
@@ -90,6 +94,9 @@ FLUX.3 适配不是只修改 server 仓库。server 负责把请求送进 pipeli
   -> 单请求 HTTP T2I
   -> 64 个并发 HTTP T2I
   -> 图片异步任务、轮询和 cancel
+  -> 三类模型组件按 worker 常驻
+  -> schedule 缓存和设备端 CFG / Euler / latent
+  -> 32 并发与 200 同时提交性能回归
 ```
 
 以下各节按这个真实顺序说明每一步修改了什么、在哪个文件、如何验证以及结果是什么。
@@ -496,10 +503,10 @@ HTTP 200：64
 
 | 文件 | 修改内容 |
 |---|---|
-| `tt-media-server/Dockerfile` | 使用本地 tt-metal BuildKit context；增加 FLUXCACHE 环境；不复制模型权重；不再 clone 远端 tt-metal |
+| `tt-media-server/Dockerfile` | 使用本地 tt-metal BuildKit context；增加 FLUXCACHE 环境；默认设置 `FLUX3_COMPONENT_RESIDENCY=resident`；不复制模型权重；不再 clone 远端 tt-metal |
 | `tt-media-server/config/constants.py` | 注册 FLUX.3 model、runner、model mapping、Galaxy 单芯片 32-worker 配置 |
 | `tt-media-server/open_ai_api/models.py` | 将 FLUX.3 runner 接入 `BaseImageRequest` |
-| `tt-media-server/tt_model_runners/dit_runners.py` | 增加 `TTFlux3ImageKleinRunner`、绝对模型路径读取、pipeline 调用和 list 响应修复 |
+| `tt-media-server/tt_model_runners/dit_runners.py` | 增加 `TTFlux3ImageKleinRunner`、绝对模型路径读取、pipeline 调用和 list 响应修复；每个 worker 常驻 prompt encoder、Transformer、VAE，并提供 `per_request` 回退模式 |
 | `tt-media-server/tt_model_runners/runner_fabric.py` | 注册 FLUX.3 runner 工厂 |
 
 ### 17.2 tt-metal
@@ -512,7 +519,7 @@ HTTP 200：64
 | `models/tt_dit/pipelines/flux3/flux3_config.py` | checkpoint 配置和模型资产校验 |
 | `models/tt_dit/pipelines/flux3/flux3_components.py` | Qwen3-VL、VAE 组件和权重加载 |
 | `models/tt_dit/pipelines/flux3/flux3_prompt_encoder.py` | tokenizer、chat template、M-RoPE、Qwen3-VL prompt encoder 调用 |
-| `models/tt_dit/pipelines/flux3/pipeline_flux3.py` | 外部 embedding、Qwen3-VL 文本路径、多步 denoise、VAE decode、PNG 输出 |
+| `models/tt_dit/pipelines/flux3/pipeline_flux3.py` | 外部 embedding、Qwen3-VL 文本路径、多步 denoise、VAE decode、PNG 输出；schedule 缓存、设备端 CFG/Euler 和 denoise latent 常驻 |
 | `models/tt_dit/pipelines/flux3/sampling.py` | latent、patchify、RoPE、schedule、time embedding、Euler step |
 | `models/tt_dit/pipelines/flux3/t2i_contract.py` | T2I 请求数据结构 |
 | `models/tt_dit/pipelines/flux3/test_one_step.py` | 真实 Transformer 单步验证 |
@@ -525,8 +532,8 @@ HTTP 200：64
 ### 17.3 当前提交状态
 
 ```text
-TL-inference-server 功能基线：9ef4e5e03e9f466dd68e222462725577b70ece7b
-tt-metal 功能基线：63d6c1b321194b7d670656b4d8bd3b40bc308176
+TL-inference-server 功能基线：e46186a9160d48344ec1f706f6ff4efd6f6c53ba
+tt-metal 功能基线：3ff5dc122dae38d173870cf5525e9ed96d877c33
 分支：flux-3-image-klein
 工作树：clean
 ```
@@ -556,6 +563,10 @@ tt-metal 功能基线：63d6c1b321194b7d670656b4d8bd3b40bc308176
 - [已完成] 32 个单芯片 worker warmup，并完成 64 个并发请求回归；
 - [历史数据] 早期 64 并发测试记录单请求约 12.26 秒、平均约 28.94 秒、最大约 39.89 秒；该数据来自修复 SwiGLU 和 Distilled flow-map 前的实现，只保留作阶段记录，不作为当前性能基线；
 - [已完成] 2026-11-05 Distilled 1024×1024、16 步、32 worker、200 请求测试：200/200 成功，总耗时 132.499 秒，吞吐 1.5094 images/s，平均响应时间 73.215 秒，P95 121.740 秒；
+- [已完成] 每个 worker 常驻 prompt encoder、Transformer、VAE；请求阶段重复权重加载事件为 0；
+- [已完成] 相同步数的 flow schedule 缓存；初始 latent 只上传一次；CFG、Euler update 和 denoise latent 保持在 TT 设备端；
+- [已完成] 优化后单请求 4 次测试，后 3 次平均 11.541 秒；32 并发墙钟 12.123 秒、吞吐 2.6397 images/s；
+- [已完成] 优化后 200 个同时提交请求：200/200 成功，总耗时 77.820 秒，吞吐 2.5700 images/s，平均响应 40.971 秒，P95 67.038 秒；
 - [未完成] matmul blocking/layout、trace 深度优化、功耗和内存峰值专项优化。
 
 ### 18.4 服务工程
@@ -575,6 +586,10 @@ tt-metal 功能基线：63d6c1b321194b7d670656b4d8bd3b40bc308176
 /local/lnn/fluxcache/flux3_qwen_prompt_1step.png
 /local/lnn/fluxcache/flux3_api_12step.png
 /local/lnn/fluxcache/bench64_20261104/
+/local/fluxcache/benchmarks/flux3-resident-device-euler.png
+/local/fluxcache/benchmarks/flux3-resident-device-euler-32x32.json
+/local/fluxcache/benchmarks/flux3-resident-device-euler-200x32.json
+/local/fluxcache/benchmarks/flux3-resident-device-euler-200x200.json
 ```
 
 本文件的当前状态以第 1 节、第 15～18 节为准；早期单步验证只是完整流程中的一个阶段，不再作为当前总体状态。
@@ -1051,3 +1066,235 @@ outputs/flux3-200-requests-20261105/container-inspect.json
 ```
 
 当前容器保持运行，32/32 worker ready，队列为 0，canary 为 healthy。
+
+## 27. 2026-11-05：按 vLLM-Omni 优先级完成常驻组件和设备端 denoise 优化
+
+### 27.1 优化前的问题
+
+优化前的完整 T2I 已能正确生成图片，但一次请求中存在以下重复工作：
+
+1. `TTFlux3ImageKleinRunner.run()` 每次调用 pipeline 时没有传入已创建的模型组件。
+2. `Flux3T2IPipeline.run()` 因此会在每次请求中重新创建和加载 Qwen3-VL prompt encoder、FLUX.3 Transformer 和 VAE decoder。
+3. denoise loop 每一步都把 host 侧 `image_tokens` 上传到 TT 设备。
+4. Transformer 每一步输出都传回 host，在 PyTorch tensor 上完成 CFG 和 Euler update，下一步再重新上传。
+5. 相同步数的 flow schedule 每次请求重新创建。
+
+这会增加 cache 读取、对象构造、host/device 传输和 host 侧逐步采样开销，也使 32 worker 并发时共享 CPU、内存和 I/O 的竞争放大。
+
+### 27.2 第一步：让每个 worker 常驻三个模型组件
+
+修改文件：
+
+```text
+/local/lnn/TL-inference-server/tt-media-server/tt_model_runners/dit_runners.py
+```
+
+在 `TTFlux3ImageKleinRunner.__init__()` 中增加：
+
+```python
+self._prompt_encoder = None
+self._transformer = None
+self._vae_decoder = None
+self._component_residency = os.environ.get(
+    "FLUX3_COMPONENT_RESIDENCY", "resident"
+).strip().lower()
+```
+
+`create_pipeline()` 在 worker 初始化和设备打开后执行一次。`resident` 模式在这里创建并加载：
+
+- `pipeline.create_prompt_encoder(...)`；
+- `pipeline.create_transformer(...)` 和 `pipeline.load_transformer_weights(...)`；
+- `pipeline.create_vae_decoder(...)` 和 `pipeline.load_vae_weights(...)`。
+
+三个对象保存到 runner 实例中。后续 `run()` 调用把它们传给 `pipeline.run()`，所以一个 worker 生命周期内只加载一次，不在每个 HTTP 请求中重复加载。
+
+32 个 worker 启动日志均出现：
+
+```text
+Device N: all FLUX.3 components are resident
+```
+
+从第一张真实请求开始统计后续服务日志：
+
+```text
+重复组件/cache 加载事件：0
+worker error_count 合计：0
+```
+
+### 27.3 第二步：保留显存不足时的旧模式
+
+同一文件支持两个值：
+
+```text
+FLUX3_COMPONENT_RESIDENCY=resident      默认；每 worker 常驻三个组件
+FLUX3_COMPONENT_RESIDENCY=per_request   回退；沿用原逐请求创建和加载路径
+```
+
+如果未来单芯片设备内存不足，可在启动容器时设置：
+
+```bash
+-e FLUX3_COMPONENT_RESIDENCY=per_request
+```
+
+`per_request` 模式下 runner 传入的三个组件保持为 `None`，pipeline 会执行原有的按请求创建逻辑。该回退没有复制第二套 pipeline，实现路径仍由同一组 `create_*()` 和 `load_*_weights()` 方法维护。
+
+修改文件：
+
+```text
+/local/lnn/TL-inference-server/tt-media-server/Dockerfile
+```
+
+Dockerfile 的持久化缓存环境块增加默认值：
+
+```dockerfile
+FLUX3_COMPONENT_RESIDENCY=resident
+```
+
+运行时 `docker run -e FLUX3_COMPONENT_RESIDENCY=per_request ...` 可以覆盖镜像默认值。
+
+### 27.4 第三步：缓存 flow schedule
+
+修改文件：
+
+```text
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py
+```
+
+`Flux3T2IPipeline.__init__()` 增加：
+
+```python
+self._schedule_cache: dict[int, Flux3FlowSchedule] = {}
+```
+
+`prepare_schedule()` 用 `request.steps` 作为 key。相同步数例如 16 步或 50 步只创建一次 schedule，后续请求直接复用不可变的 timesteps 和 sigmas。
+
+### 27.5 第四步：把 latent、CFG 和 Euler update 保留在 TT 设备端
+
+修改位置仍是：
+
+```text
+/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py
+Flux3T2IPipeline.run_with_prompt_embeds()
+```
+
+优化后的执行顺序：
+
+```text
+host 初始 noise/latent
+  -> 一次 H2D，得到 image_tt
+  -> denoise step 0..N-1
+       Transformer forward on TT
+       CFG on TT（Base 模型）
+       model_output *= sigma_next - sigma_current
+       image_tt += model_output
+  -> 设备端 image_tt 直接进入 VAE preprocess/unpatchify
+  -> TTNN VAE decode
+  -> 最终图片一次 D2H
+  -> PNG/JPEG 编码和 HTTP 返回
+```
+
+Base 模型的 CFG 改为 TTNN 运算：
+
+```python
+model_output = ttnn.subtract(conditional_output, unconditional_output)
+ttnn.multiply_(model_output, float(request.guidance))
+ttnn.add_(model_output, unconditional_output)
+```
+
+Euler update 改为 TTNN 原地运算：
+
+```python
+sigma_delta = float((sigma_next - sigma_current).item())
+ttnn.multiply_(model_output, sigma_delta)
+ttnn.add_(image_tt, model_output)
+```
+
+因此 denoise loop 不再每一步执行 `image_tokens -> TT -> host -> image_tokens` 往返。VAE 的 `preprocess_and_unpatchify()` 也直接接收最终设备端 `image_tt`。
+
+当前 accumulator 使用 `ttnn.bfloat16`。旧实现把每一步 Transformer BF16 输出传回 host 后以 PyTorch FP32 latent 累积。真实黑鸟图片语义和视觉质量已通过，但尚未执行 Golden Data 逐步数值对齐；如后续发现累积误差，应优先评估 TT 设备端 float32 accumulator，而不是恢复每步 D2H/H2D。
+
+### 27.6 实施和验证中遇到的问题
+
+| 步骤 | 现象 | 原因 | 处理 |
+|---|---|---|---|
+| 第一张 HTTP 验证 | 返回 422，服务提示 JSON decode error | Windows PowerShell、SSH、远端 shell 三层引号使手写 `curl -d` JSON 被破坏 | 改用 Python `urllib.request` 对字典执行 `json.dumps()`，消除 shell JSON 转义；后续请求 HTTP 200 |
+| 设备端 Euler 风险检查 | 修改前担心 `ttnn.multiply_`/`ttnn.add_` 出现 dtype 或 layout 不兼容 | latent 和 Transformer 输出均为设备 BF16，原地算子要求布局兼容 | 真实 16-step 请求和 437 个累计请求均成功，无 layout/dtype 异常，无 worker error |
+| 数值精度检查 | 设备端 BF16 累积与旧 host FP32 累积不同 | 为减少每步 D2H/H2D，accumulator 改为设备 BF16 | 使用固定 prompt/seed 生成 1024×1024 PNG，图片为清晰黑鸟且符合 prompt；保留后续 Golden Data 对齐项 |
+
+### 27.7 验证步骤和结果
+
+验证配置：
+
+```json
+{
+  "prompt": "a black bird",
+  "width": 1024,
+  "height": 1024,
+  "num_inference_steps": 16,
+  "seed": 42,
+  "response_format": "file",
+  "image_return_format": "PNG"
+}
+```
+
+1. 重新启动 32-worker 服务，确认 32/32 ready、`canary_state=healthy`、所有 `error_count=0`。
+2. 检查 32 个 worker 均输出组件常驻完成日志。
+3. 发送单张真实请求，得到有效 1024×1024 RGB PNG，内容与 `a black bird` 一致。
+4. 从第一张请求之后统计日志，组件和 cache 重新加载事件为 0。
+5. 连续执行 4 次单请求，按既定规则丢弃第一次，计算后 3 次平均值。
+6. 执行 32 请求、32 并发，验证所有 worker 同时工作。
+7. 执行 200 请求、32 个最大在途请求，验证持续饱和吞吐。
+8. 执行 200 请求、200 个客户端同时提交，与旧基线同口径比较排队和总吞吐。
+
+单请求结果：
+
+| 次数 | 客户端总耗时 |
+|---:|---:|
+| 1 | 11.568 s |
+| 2 | 11.522 s |
+| 3 | 11.546 s |
+| 4 | 11.555 s |
+| 后 3 次平均 | **11.541 s** |
+
+并发结果：
+
+| 场景 | 成功 | 总墙钟 | 吞吐 | 平均延迟 | P95 | 最大延迟 |
+|---|---:|---:|---:|---:|---:|---:|
+| 32 请求 / 32 并发 | 32/32 | 12.123 s | 2.6397 images/s | 11.923 s | 12.093 s | 12.112 s |
+| 200 请求 / 32 并发 | 200/200 | 81.209 s | 2.4628 images/s | 11.626 s | 11.995 s | 12.154 s |
+| 200 请求 / 200 同时提交 | 200/200 | 77.820 s | 2.5700 images/s | 40.971 s | 67.038 s | 77.782 s |
+
+与旧的 200 同时提交基线比较：
+
+| 指标 | 优化前 | 优化后 | 变化 |
+|---|---:|---:|---:|
+| 总墙钟 | 132.499 s | 77.820 s | 降低 41.3% |
+| 整机吞吐 | 1.5094 images/s | 2.5700 images/s | 提升 70.3% |
+| 平均响应时间 | 73.215 s | 40.971 s | 降低 44.0% |
+| P95 | 121.740 s | 67.038 s | 降低 44.9% |
+
+### 27.8 代码提交和验证产物
+
+```text
+TL-inference-server：e46186a9160d48344ec1f706f6ff4efd6f6c53ba
+提交说明：Keep FLUX.3 pipeline components resident per worker
+
+tt-metal：3ff5dc122dae38d173870cf5525e9ed96d877c33
+提交说明：Optimize FLUX.3 device-resident denoise loop
+```
+
+远端产物：
+
+```text
+/local/fluxcache/benchmarks/flux3-resident-device-euler.png
+/local/fluxcache/benchmarks/resident-device-euler-4runs/
+/local/fluxcache/benchmarks/flux3-resident-device-euler-32x32.json
+/local/fluxcache/benchmarks/flux3-resident-device-euler-200x32.json
+/local/fluxcache/benchmarks/flux3-resident-device-euler-200x200.json
+```
+
+本地质量样图：
+
+```text
+outputs/flux3-resident-device-euler.png
+```
