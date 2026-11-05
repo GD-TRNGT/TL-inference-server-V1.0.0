@@ -1457,3 +1457,96 @@ queue_size：0
 canary_state：healthy
 所有 worker error_count：0
 ```
+
+## 29. 单参考图 + prompt 条件推理实现（2026-11-05）
+
+### 29.1 实现依据和边界确认
+
+复核 10.0.28.22 上 vLLM-Omni FLUX.3 实现所对应的参考代码后，确认核心生成链路是：
+
+```text
+reference PIL image
+  -> FLUX.3 VAE encoder
+  -> posterior mean
+  -> 2x2 latent packing + frozen BatchNorm
+  -> 128-channel image_cond tokens
+  -> 5 image_cond mode blocks
+  -> 28 text/image_cond/image joint single blocks
+  -> denoise output image
+```
+
+核心 text encoder 继续只编码文字。参考实现中的 prompt upsampler 可以同时看文字和参考图并生成完整 caption，但它是模型外的可选预处理，不替代 `image_cond` 链路。
+
+### 29.2 TT-Metal 修改
+
+| 文件 | 修改内容 | 作用 |
+|---|---|---|
+| `models/tt_dit/pipelines/flux3/t2i_contract.py` | `Flux3T2IRequest` 增加 `reference_images`，校验 PIL 类型及最多 10 张 | 把参考图片从 server 传入 pipeline |
+| `models/tt_dit/pipelines/flux3/flux3_components.py` | 增加官方单参考图 resize/pad 策略和 `Flux3ReferenceEncoder` | 使用本地 `AutoencoderKLFlux2` 权重产生真实 `image_cond` token |
+| `models/tt_dit/pipelines/flux3/sampling.py` | 增加 `make_reference_image_rope()` | 生成空间坐标，并用第四轴负数区分参考图 |
+| `models/tt_dit/models/transformers/transformer_flux3.py` | 增加三流 single-block 执行；启用 image_cond embedding、modulation 和 5 个 mode block | 让参考图实际参与全部 DiT 推理，而不是只增加 API 字段 |
+| `models/tt_dit/pipelines/flux3/pipeline_flux3.py` | 在 denoise loop 前编码参考图，并把 token/RoPE 传给每一步 forward | 串联参考图编码和完整采样过程 |
+| `models/tt_dit/tests/flux3/test_reference_conditioning.py` | 校验不同参考图索引只改变四轴 RoPE 的 reference 轴 | 防止多参考图身份坐标退化 |
+
+当前 TTNN 只有匹配的 VAE decoder，尚无 FLUX2 VAE encoder。因此 `Flux3ReferenceEncoder` 是真实但暂时的 CPU fallback：加载同一模型目录下 `vae/` 的 Diffusers `AutoencoderKLFlux2`，不是伪造 latent，也不是把“参考图片”文字拼进 prompt。它在每个 worker 第一次收到参考图时懒加载，不影响纯 T2I worker 的启动和常驻内存。
+
+### 29.3 TL-inference-server 修改
+
+| 文件 | 修改内容 | 作用 |
+|---|---|---|
+| `tt-media-server/domain/image_generate_request.py` | 增加可选字符串字段 `reference_image` | `/v1/images/generations` 可随 prompt 提交 Base64/data URL 参考图 |
+| `tt-media-server/tt_model_runners/dit_runners.py` | 解码 `reference_image` 或兼容 `/image-to-image` 的 `image`，懒加载 reference encoder，并构造 `reference_images` | API 输入进入真实 TT pipeline |
+| `tt-media-server/tests/test_flux3_reference_api.py` | 覆盖有图和无图请求模型 | 保证新增字段可选且不破坏 T2I |
+
+### 29.4 请求示例
+
+以下命令从客户端本地图片生成 JSON，并发送 `prompt + reference_image`。图片以 Base64 随 HTTP 请求上传，不是服务器文件路径：
+
+```bash
+REFERENCE_IMAGE=/path/to/reference.png \
+PROMPT='Preserve the same subject and place it in a snowy pine forest at sunrise.' \
+python3 -c '
+import base64, json, os, sys
+with open(os.environ["REFERENCE_IMAGE"], "rb") as f:
+    image = base64.b64encode(f.read()).decode("ascii")
+json.dump({
+    "prompt": os.environ["PROMPT"],
+    "reference_image": "data:image/png;base64," + image,
+    "width": 256,
+    "height": 256,
+    "num_inference_steps": 12,
+    "seed": 42,
+    "response_format": "file",
+    "image_return_format": "PNG"
+}, sys.stdout)
+' | curl --fail-with-body -sS \
+  -H 'Content-Type: application/json' \
+  --data-binary @- \
+  http://127.0.0.1:8000/v1/images/generations \
+  -o flux3_reference.png
+```
+
+也可以使用现有 `/v1/images/image-to-image`，把同一 Base64/data URL 放在 `image` 字段。不得在同一请求中同时设置 `reference_image` 和 `image`。
+
+### 29.5 验证过程和结果
+
+1. 主机侧加载模型自带 `assets/1_figurine.png`。
+2. VAE encoder 输出 `(1, 3920, 128)` BF16 token；对应网格为 `70 × 56`。
+3. reference RoPE 的 cos/sin 均为 `(3920, 128)`，token 数值全部有限。
+4. 重启源码 bind-mount 的 32-worker 服务，`/tt-liveness` 显示 32/32 ready。
+5. 发送参考图 + prompt 请求，输出保留原机器人/人偶主体，并应用“雪地松林、日出”的场景。
+6. 再发送无参考图 T2I 请求，确认旧路径未回归。
+
+| 测试 | HTTP/格式 | 时间 | 输出 |
+|---|---|---:|---|
+| reference + prompt，256×256，12 steps | 200 / PNG，111,797 bytes | 71.423 s（首次加载 encoder 和首次 image_cond 编译） | `/local/lnn/fluxcache/flux3_reference_edit_256_12steps.png` |
+| T2I 回归，256×256，12 steps | 200 / PNG，109,706 bytes | 1.809 s（热态） | `/local/lnn/fluxcache/flux3_t2i_regression_256_12steps.png` |
+
+单元测试结果：TT-Metal reference RoPE 测试 1/1 通过；server 请求模型测试 2/2 通过。服务日志没有 traceback 或 worker error；参考请求由 worker 22 执行并返回 HTTP 200。
+
+### 29.6 尚未实现
+
+- HTTP 多参考图字段和 2～10 张参考图端到端验证。
+- FLUX2/FLUX.3 VAE encoder 的 TTNN 实现；当前是 PyTorch CPU fallback。
+- prompt upsampler 服务化；当前 prompt 原样送入核心 text encoder。
+- Base 50-step 模型的单参考图完整 smoke test；本次真实请求使用 Distilled 模型。

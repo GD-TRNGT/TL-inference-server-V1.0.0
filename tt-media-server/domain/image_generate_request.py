@@ -18,6 +18,9 @@ _SKIP_STEP_VALIDATION_RUNNERS = {"tt-z-image-turbo"}
 class BaseImageRequest(BaseRequest):
     prompt: str
     negative_prompt: Optional[str] = None
+    # FLUX.3 accepts a Base64 string or data URL here.  Other image runners
+    # ignore the field unless they explicitly implement reference conditioning.
+    reference_image: Optional[str] = Field(default=None)
     num_inference_steps: Optional[int] = Field(default=20, ge=4, le=50)
     seed: Optional[int] = None
     number_of_images: Optional[int] = Field(default=1, ge=1, le=4)

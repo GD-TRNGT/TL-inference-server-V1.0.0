@@ -933,7 +933,7 @@ curl -X POST http://127.0.0.1:8000/v1/images/generations \
 - [ ] T2I API 能生成有效图片。
 - [ ] 固定 seed 能重复生成可接受结果。
 - [ ] vLLM/参考实现和 TT 结果完成中间张量及最终图像对齐。
-- [ ] 单参考图 I2I 可用。
+- [x] 单参考图 I2I 可用：`reference_image` 已接入真实 VAE `image_cond` 条件链路，并完成 HTTP 200 PNG 验证。
 - [ ] 多参考图行为、上限和顺序已明确。
 - [ ] 关键阶段耗时、峰值内存和 kernel 编译时间已记录。
 - [ ] Blackhole Galaxy 的 mesh、trace、dtype 和超时参数已实测确认。
@@ -1269,3 +1269,29 @@ Base 32-worker 补充验证：32 个并发请求全部成功，worker 0～31 每
 TL-inference-server e46186a9160d48344ec1f706f6ff4efd6f6c53ba
 tt-metal           3ff5dc122dae38d173870cf5525e9ed96d877c33
 ```
+
+## 附录：2026-11-05 单参考图条件推理实施状态
+
+### 已完成
+
+- `/v1/images/generations` 在 `prompt` 基础上增加可选 `reference_image`，接受裸 Base64 或 `data:image/...;base64,...`。
+- `/v1/images/image-to-image` 原有 `image` 字段也可被 FLUX.3 runner 读取，二者不可同时提供。
+- 参考图按官方单参考图策略做 EXIF 方向处理、RGB 转换、等比例缩放和 16 像素网格反射填充。
+- 参考图经 `AutoencoderKLFlux2` encoder、posterior mode、2×2 latent packing 和冻结 BatchNorm，产生 `[1, L, 128]` 的真实 `image_cond` token。
+- 参考图四轴 RoPE 的第四轴使用 `-1、-2...`，用于区分参考图和输出图像。
+- TTNN Transformer 已执行 5 个 `image_cond` mode block，并在全部 28 个 single block 中联合处理 text、image_cond 和 image。
+- 不带参考图时仍走原 T2I 路径，回归请求成功。
+
+### 验证结果
+
+| 场景 | 结果 | 输出 |
+|---|---|---|
+| 参考图 + prompt，256×256，12 steps，seed 42 | HTTP 200，PNG，111,797 bytes，冷态 71.423 s | `/local/lnn/fluxcache/flux3_reference_edit_256_12steps.png` |
+| 纯 T2I 回归，256×256，12 steps，seed 42 | HTTP 200，PNG，热态 1.809 s | `/local/lnn/fluxcache/flux3_t2i_regression_256_12steps.png` |
+| 参考图 encoder 主机测试 | `(1, 3920, 128)` BF16，RoPE `(3920, 128)`，数值全部有限 | 模型自带 `assets/1_figurine.png` |
+
+### 当前边界
+
+- HTTP API 本次只开放单张参考图；内部 request contract 和 RoPE 已按最多 10 张设计，尚未开放多图字段。
+- TT-Metal 当前只有 FLUX2 VAE decoder，没有对应 encoder；参考图 VAE encoder 暂由容器内 Diffusers/PyTorch CPU 实现并按 worker 首次使用时懒加载。下一阶段应实现 TTNN VAE encoder。
+- 核心 FLUX.3 text encoder 仍是 text-only；参考图进入核心生成模型的路径是 VAE `image_cond`。28.22/vLLM 的 prompt upsampler 可额外看图并改写 caption，但它属于可选上游增强，不等同于 DiT 参考图条件路径。

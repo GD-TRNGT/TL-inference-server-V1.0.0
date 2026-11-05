@@ -515,6 +515,8 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         self._prompt_encoder = None
         self._transformer = None
         self._vae_decoder = None
+        self._reference_encoder = None
+        self._image_manager = ImageManager("flux3-reference")
         self._component_residency = os.environ.get(
             "FLUX3_COMPONENT_RESIDENCY", "resident"
         ).strip().lower()
@@ -583,6 +585,24 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 if requested_guidance is None
                 else requested_guidance
             )
+        reference_payload = getattr(request, "reference_image", None)
+        legacy_image_payload = getattr(request, "image", None)
+        if reference_payload and legacy_image_payload:
+            raise ValueError("provide only one of reference_image or image")
+        reference_payload = reference_payload or legacy_image_payload
+        reference_images = ()
+        if reference_payload:
+            reference_image = self._image_manager.base64_to_pil_image(
+                reference_payload,
+                target_mode="RGB",
+            )
+            reference_images = (reference_image,)
+            if self._reference_encoder is None:
+                self.logger.info(
+                    f"Device {self.device_id}: loading FLUX.3 reference-image VAE encoder"
+                )
+                self._reference_encoder = self.pipeline.create_reference_encoder()
+
         flux_request = Flux3T2IRequest(
             prompt=request.prompt,
             negative_prompt=request.negative_prompt or "",
@@ -591,6 +611,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             steps=steps,
             seed=int(request.seed or 0),
             guidance=guidance,
+            reference_images=reference_images,
         )
         return [
             self.pipeline.run(
@@ -602,6 +623,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 prompt_encoder=self._prompt_encoder,
                 transformer=self._transformer,
                 vae_decoder=self._vae_decoder,
+                reference_encoder=self._reference_encoder,
             )["image"]
         ]
 
