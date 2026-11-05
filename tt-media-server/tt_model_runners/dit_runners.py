@@ -38,7 +38,11 @@ from models.common.utility_functions import is_blackhole
 from models.tt_dit.pipelines.flux1.pipeline_flux1 import Flux1Pipeline
 from models.tt_dit.pipelines.flux3.pipeline_flux3 import Flux3T2IPipeline
 from models.tt_dit.pipelines.flux3.t2i_contract import Flux3T2IRequest
-from models.tt_dit.parallel.config import DiTParallelConfig, EncoderParallelConfig
+from models.tt_dit.parallel.config import (
+    DiTParallelConfig,
+    EncoderParallelConfig,
+    Flux2VaeParallelConfig,
+)
 from models.tt_dit.parallel.manager import CCLManager
 
 try:
@@ -508,6 +512,17 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         self._ccl_manager = None
         self._dit_parallel = None
         self._encoder_parallel = None
+        self._prompt_encoder = None
+        self._transformer = None
+        self._vae_decoder = None
+        self._component_residency = os.environ.get(
+            "FLUX3_COMPONENT_RESIDENCY", "resident"
+        ).strip().lower()
+        if self._component_residency not in {"resident", "per_request"}:
+            raise ValueError(
+                "FLUX3_COMPONENT_RESIDENCY must be 'resident' or 'per_request', "
+                f"got {self._component_residency!r}"
+            )
 
     def create_pipeline(self):
         self._ccl_manager = CCLManager(self.ttnn_device, topology=ttnn.Topology.Linear)
@@ -517,7 +532,43 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             "FLUX3_MODEL_ROOT",
             self.settings.model_weights_path,
         )
-        return Flux3T2IPipeline(weights_path)
+        pipeline = Flux3T2IPipeline(weights_path)
+        if self._component_residency == "resident":
+            self.logger.info(
+                f"Device {self.device_id}: loading resident FLUX.3 prompt encoder"
+            )
+            self._prompt_encoder = pipeline.create_prompt_encoder(
+                device=self.ttnn_device,
+                parallel_config=self._encoder_parallel,
+                ccl_manager=self._ccl_manager,
+            )
+            self.logger.info(
+                f"Device {self.device_id}: loading resident FLUX.3 Transformer"
+            )
+            self._transformer = pipeline.create_transformer(
+                device=self.ttnn_device,
+                ccl_manager=self._ccl_manager,
+                parallel_config=self._dit_parallel,
+            )
+            pipeline.load_transformer_weights(self._transformer)
+            self.logger.info(
+                f"Device {self.device_id}: loading resident FLUX.3 VAE decoder"
+            )
+            self._vae_decoder = pipeline.create_vae_decoder(
+                device=self.ttnn_device,
+                ccl_manager=self._ccl_manager,
+                parallel_config=Flux2VaeParallelConfig(),
+            )
+            pipeline.load_vae_weights(self._vae_decoder)
+            self.logger.info(
+                f"Device {self.device_id}: all FLUX.3 components are resident"
+            )
+        else:
+            self.logger.warning(
+                f"Device {self.device_id}: FLUX.3 components will be loaded per request; "
+                "use this mode only when resident mode does not fit device memory"
+            )
+        return pipeline
 
     def run(self, requests: list[ImageGenerateRequest]):
         request = requests[0]
@@ -548,6 +599,9 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 ccl_manager=self._ccl_manager,
                 parallel_config=self._dit_parallel,
                 encoder_parallel_config=self._encoder_parallel,
+                prompt_encoder=self._prompt_encoder,
+                transformer=self._transformer,
+                vae_decoder=self._vae_decoder,
             )["image"]
         ]
 
