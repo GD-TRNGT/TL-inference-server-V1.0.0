@@ -801,6 +801,7 @@ BF16、FP8、NVFP4 或其他量化路径必须分别建立 Golden Data，不能�
 | 2026-11-05 | Distilled 预热 | 32/32 | 1024×1024 | 16 | 32/32 成功，22.587 s，1.4168 images/s |
 | 2026-11-05 | Distilled 压测 | 32/200 | 1024×1024 | 16 | 200/200 成功，132.499 s，1.5094 images/s，P95 121.740 s |
 | 2026-11-05 | Distilled 常驻+设备端 Euler | 1/1 | 1024×1024 | 16 | 4 次后 3 次平均 11.541 s，语义正确 |
+| 2026-11-05 | Base 常驻+设备端 CFG/Euler | 1/1 | 1024×1024 | 50 | 62.395 s，CFG 3.5，语义正确 |
 | 2026-11-05 | Distilled 常驻+设备端 Euler | 32/32 | 1024×1024 | 16 | 32/32 成功，12.123 s，2.6397 images/s |
 | 2026-11-05 | Distilled 常驻+设备端 Euler | 32/200 同时提交 | 1024×1024 | 16 | 200/200 成功，77.820 s，2.5700 images/s，P95 67.038 s |
 
@@ -1242,6 +1243,9 @@ docs/FLUX3_IMAGE_KLEIN_TT_QUALITY_DEBUG.md
 服务：32 个单芯片 worker
 组件重复加载事件：0
 worker error_count：0
+
+Base 补充验证：/local/models/flux-3-image-klein-base，50 steps，CFG 3.5，
+单 worker，HTTP 200，62.395 s，1024x1024 PNG，语义正确，error_count=0
 ```
 
 | 场景 | 结果 |
@@ -1251,7 +1255,7 @@ worker error_count：0
 | 200 请求 / 32 并发 | 81.209 s；2.4628 images/s |
 | 200 请求 / 200 同时提交 | 77.820 s；2.5700 images/s；P95 67.038 s |
 
-与旧的 200 同时提交基线相比，总墙钟降低 41.3%，吞吐提升 70.3%。生成样图语义正确。当前 TT 设备端 Euler accumulator 为 BF16；后续精度工作应评估 FP32 accumulator，但不应直接恢复每个 denoise step 的 host/device 往返。
+与旧的 200 同时提交基线相比，总墙钟降低 41.3%，吞吐提升 70.3%。Distilled flow-map 和 Base CFG 两条路径的生成样图均语义正确。当前 TT 设备端 Euler accumulator 为 BF16；后续精度工作应评估 FP32 accumulator，但不应直接恢复每个 denoise step 的 host/device 往返。
 
 功能提交：
 

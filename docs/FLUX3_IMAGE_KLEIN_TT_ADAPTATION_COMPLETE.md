@@ -22,6 +22,7 @@
 - Base 与 Distilled 两套 `/local/models` 权重的自动识别、独立缓存和单芯片 T2I；
 - 修复 FLUX.3 checkpoint 与 TTNN fused SwiGLU 的权重半区顺序不一致问题；
 - 使用 `a black bird` 分别完成 Base 50-step 和 Distilled 16-step 的真实语义验证。
+- 常驻组件和设备端 denoise 优化后，重新实测 Distilled 16-step 及 Base 50-step CFG，两者均返回语义正确的 1024×1024 PNG。
 
 当前明确暂缓或未完成：
 
@@ -1211,15 +1212,15 @@ ttnn.add_(image_tt, model_output)
 
 因此 denoise loop 不再每一步执行 `image_tokens -> TT -> host -> image_tokens` 往返。VAE 的 `preprocess_and_unpatchify()` 也直接接收最终设备端 `image_tt`。
 
-当前 accumulator 使用 `ttnn.bfloat16`。旧实现把每一步 Transformer BF16 输出传回 host 后以 PyTorch FP32 latent 累积。真实黑鸟图片语义和视觉质量已通过，但尚未执行 Golden Data 逐步数值对齐；如后续发现累积误差，应优先评估 TT 设备端 float32 accumulator，而不是恢复每步 D2H/H2D。
+当前 accumulator 使用 `ttnn.bfloat16`。旧实现把每一步 Transformer BF16 输出传回 host 后以 PyTorch FP32 latent 累积。Distilled 16-step 和 Base 50-step CFG 的真实黑鸟图片语义和视觉质量均已通过，但尚未执行 Golden Data 逐步数值对齐；如后续发现累积误差，应优先评估 TT 设备端 float32 accumulator，而不是恢复每步 D2H/H2D。
 
 ### 27.6 实施和验证中遇到的问题
 
 | 步骤 | 现象 | 原因 | 处理 |
 |---|---|---|---|
 | 第一张 HTTP 验证 | 返回 422，服务提示 JSON decode error | Windows PowerShell、SSH、远端 shell 三层引号使手写 `curl -d` JSON 被破坏 | 改用 Python `urllib.request` 对字典执行 `json.dumps()`，消除 shell JSON 转义；后续请求 HTTP 200 |
-| 设备端 Euler 风险检查 | 修改前担心 `ttnn.multiply_`/`ttnn.add_` 出现 dtype 或 layout 不兼容 | latent 和 Transformer 输出均为设备 BF16，原地算子要求布局兼容 | 真实 16-step 请求和 437 个累计请求均成功，无 layout/dtype 异常，无 worker error |
-| 数值精度检查 | 设备端 BF16 累积与旧 host FP32 累积不同 | 为减少每步 D2H/H2D，accumulator 改为设备 BF16 | 使用固定 prompt/seed 生成 1024×1024 PNG，图片为清晰黑鸟且符合 prompt；保留后续 Golden Data 对齐项 |
+| 设备端 Euler 风险检查 | 修改前担心 `ttnn.multiply_`/`ttnn.add_` 出现 dtype 或 layout 不兼容 | latent 和 Transformer 输出均为设备 BF16，原地算子要求布局兼容 | Distilled 累计 437 个请求和 Base 50-step CFG 请求均成功，无 layout/dtype 异常，无 worker error |
+| 数值精度检查 | 设备端 BF16 累积与旧 host FP32 累积不同 | 为减少每步 D2H/H2D，accumulator 改为设备 BF16 | 固定 prompt/seed 的 Distilled 与 Base 均生成语义正确的 1024×1024 黑鸟 PNG；保留后续 Golden Data 对齐项 |
 
 ### 27.7 验证步骤和结果
 
@@ -1245,6 +1246,7 @@ ttnn.add_(image_tt, model_output)
 6. 执行 32 请求、32 并发，验证所有 worker 同时工作。
 7. 执行 200 请求、32 个最大在途请求，验证持续饱和吞吐。
 8. 执行 200 请求、200 个客户端同时提交，与旧基线同口径比较排队和总吞吐。
+9. 暂停 Distilled 服务、重置设备，使用 Base 权重启动单 worker，真实执行 50-step、CFG 3.5；保存图片和日志后恢复原 32-worker Distilled 服务。
 
 单请求结果：
 
@@ -1255,6 +1257,12 @@ ttnn.add_(image_tt, model_output)
 | 3 | 11.546 s |
 | 4 | 11.555 s |
 | 后 3 次平均 | **11.541 s** |
+
+Base CFG 路径结果：
+
+| 模型 | steps | guidance | HTTP/文件 | 耗时 | 视觉结果 |
+|---|---:|---:|---|---:|---|
+| Base | 50 | 3.5 | 200 / 1024×1024 PNG | 62.395 s | 清晰黑鸟，与 prompt 一致 |
 
 并发结果：
 
@@ -1291,10 +1299,13 @@ tt-metal：3ff5dc122dae38d173870cf5525e9ed96d877c33
 /local/fluxcache/benchmarks/flux3-resident-device-euler-32x32.json
 /local/fluxcache/benchmarks/flux3-resident-device-euler-200x32.json
 /local/fluxcache/benchmarks/flux3-resident-device-euler-200x200.json
+/local/fluxcache/benchmarks/flux3-base-resident-device-cfg-euler.png
+/local/fluxcache/benchmarks/flux3-base-resident-device-cfg-euler.log
 ```
 
 本地质量样图：
 
 ```text
 outputs/flux3-resident-device-euler.png
+outputs/flux3-base-resident-device-cfg-euler.png
 ```
