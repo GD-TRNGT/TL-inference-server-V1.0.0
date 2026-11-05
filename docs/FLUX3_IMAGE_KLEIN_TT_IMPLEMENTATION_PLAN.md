@@ -15,14 +15,14 @@
 
 | 工作项 | 当前状态 |
 |---|---|
-| Base `/local/models/flux-3-image-klein-base` | 单芯片 T2I 已实现并完成语义验证 |
+| Base `/local/models/flux-3-image-klein-base` | 单芯片、32-worker 全覆盖及 200 请求测试均已完成 |
 | Distilled `/local/models/flux-3-image-klein` | 单芯片 T2I 已实现并完成语义验证 |
 | prompt/steps/seed/width/height | API 已支持 |
 | Base CFG/negative prompt | 已支持 |
 | Distilled flow-map/`ref_time_in` | 已支持 |
 | `response_format=file` | 已支持 PNG/JPEG 文件响应 |
 | 图片异步、轮询、cancel | 已实现 |
-| 32 个单芯片 worker | 已启动并完成 200 请求测试 |
+| 32 个单芯片 worker | Distilled 与 Base 均已完成 32-worker 和 200 请求测试 |
 | prompt encoder / Transformer / VAE 常驻 | 已实现；默认每 worker 加载一次 |
 | scheduler 缓存 | 已实现；按 `num_inference_steps` 复用 |
 | latent / CFG / Euler 设备端执行 | 已实现；denoise loop 不再逐步 D2H/H2D |
@@ -31,7 +31,7 @@
 | Golden Data 逐层数值对齐 | 按当前范围暂缓 |
 | 32 worker 首次共同创建 cache | 未解决；应预生成 cache 或增加跨进程锁 |
 
-2026-11-05 最新性能基线：Distilled、1024×1024、16 步、32 worker、组件常驻和设备端 Euler，200 个同时提交请求 200/200 成功，总耗时 77.820 秒，吞吐 2.5700 images/s，平均响应 40.971 秒，P50 44.782 秒，P95 67.038 秒。优化前同口径为 132.499 秒和 1.5094 images/s。
+2026-11-05 最新性能基线：Distilled 16 步的 200 个同时提交请求总耗时 77.820 秒、吞吐 2.5700 images/s；Base 50 步 CFG 的 200 个同时提交请求总耗时 433.557 秒、吞吐 0.4613 images/s。两组均为 200/200 成功、32 worker 全部参与、0 worker 错误。
 
 ## 1. 目标和现状
 
@@ -802,6 +802,8 @@ BF16、FP8、NVFP4 或其他量化路径必须分别建立 Golden Data，不能�
 | 2026-11-05 | Distilled 压测 | 32/200 | 1024×1024 | 16 | 200/200 成功，132.499 s，1.5094 images/s，P95 121.740 s |
 | 2026-11-05 | Distilled 常驻+设备端 Euler | 1/1 | 1024×1024 | 16 | 4 次后 3 次平均 11.541 s，语义正确 |
 | 2026-11-05 | Base 常驻+设备端 CFG/Euler | 1/1 | 1024×1024 | 50 | 62.395 s，CFG 3.5，语义正确 |
+| 2026-11-05 | Base 常驻+设备端 CFG/Euler | 32/32 | 1024×1024 | 50 | 32/32 成功，62.790 s，0.5096 images/s，所有 worker 各处理 1 个 |
+| 2026-11-05 | Base 常驻+设备端 CFG/Euler | 32/200 同时提交 | 1024×1024 | 50 | 200/200 成功，433.557 s，0.4613 images/s，P95 373.659 s |
 | 2026-11-05 | Distilled 常驻+设备端 Euler | 32/32 | 1024×1024 | 16 | 32/32 成功，12.123 s，2.6397 images/s |
 | 2026-11-05 | Distilled 常驻+设备端 Euler | 32/200 同时提交 | 1024×1024 | 16 | 200/200 成功，77.820 s，2.5700 images/s，P95 67.038 s |
 
@@ -1246,6 +1248,10 @@ worker error_count：0
 
 Base 补充验证：/local/models/flux-3-image-klein-base，50 steps，CFG 3.5，
 单 worker，HTTP 200，62.395 s，1024x1024 PNG，语义正确，error_count=0
+
+Base 32-worker 补充验证：32 个并发请求全部成功，worker 0～31 每个处理 1 个；
+200 个同时提交请求全部成功，总墙钟 433.557 s，吞吐 0.4613 images/s，
+每个 worker 处理 6～7 个请求，error_count=0。详细结果见适配记录第 28 节。
 ```
 
 | 场景 | 结果 |

@@ -23,6 +23,7 @@
 - 修复 FLUX.3 checkpoint 与 TTNN fused SwiGLU 的权重半区顺序不一致问题；
 - 使用 `a black bird` 分别完成 Base 50-step 和 Distilled 16-step 的真实语义验证。
 - 常驻组件和设备端 denoise 优化后，重新实测 Distilled 16-step 及 Base 50-step CFG，两者均返回语义正确的 1024×1024 PNG。
+- 2026-11-05 完成 Base 模型 32-worker 全覆盖和 200 个同时提交请求压测：32 个 worker 全部实际执行，200/200 成功、0 错误。
 
 当前明确暂缓或未完成：
 
@@ -1308,4 +1309,151 @@ tt-metal：3ff5dc122dae38d173870cf5525e9ed96d877c33
 ```text
 outputs/flux3-resident-device-euler.png
 outputs/flux3-base-resident-device-cfg-euler.png
+```
+
+## 28. 2026-11-05：Base 模型 32-worker 和 200 请求验证
+
+### 28.1 测试目标和环境
+
+本轮专门验证 `/local/models/flux-3-image-klein-base`，不是 Distilled 模型。目标有两个：
+
+1. 同时提交 32 个请求，确认 worker 0～31 每个都能完成一次 Base 端到端推理。
+2. 同时提交 200 个请求，验证 Base 50-step CFG 在 32 个单芯片 worker 上的稳定性、调度均衡性和吞吐。
+
+```text
+机器：10.12.11.2 / Blackhole Galaxy
+芯片：32
+worker：32，每个 worker 独占一个芯片，mesh=(1,1)
+模型：/local/models/flux-3-image-klein-base
+容器：flux3-base-32worker-test（测试完成后已删除）
+镜像：tl-inference-server:flux-3-image-klein-local-20261103-v5
+组件模式：FLUX3_COMPONENT_RESIDENCY=resident
+TT_MM_THROTTLE_PERF=0
+TT_METAL_TDP_LIMIT_WATTS=160
+```
+
+请求参数：
+
+```json
+{
+  "prompt": "a black bird",
+  "negative_prompt": "",
+  "width": 1024,
+  "height": 1024,
+  "num_inference_steps": 50,
+  "guidance_scale": 3.5,
+  "seed": "10000 + request_index",
+  "response_format": "file",
+  "image_return_format": "PNG"
+}
+```
+
+启动前停止原 Distilled 容器并执行全设备 reset。Base 测试完成后删除临时容器，再次 reset，并恢复原 `flux3-media-server-test` Distilled 32-worker 服务。
+
+### 28.2 32 个 worker 全覆盖测试
+
+同时提交 32 个 Base 请求：
+
+| 指标 | 结果 |
+|---|---:|
+| 请求数 | 32 |
+| 并发数 | 32 |
+| HTTP 200 / 失败 | 32 / 0 |
+| 有效 PNG | 32 |
+| 总墙钟时间 | 62.790 s |
+| 整机吞吐 | 0.5096 images/s |
+| 平均延迟 | 62.520 s |
+| P50 | 62.540 s |
+| P95 | 62.729 s |
+| 最小 / 最大延迟 | 62.224 / 62.776 s |
+| 返回数据量 | 49,588,056 bytes |
+| 服务日志错误 | 0 |
+
+服务日志共匹配到 32 条 `Worker N processing tasks`：worker 0～31 每个恰好出现 1 次。这证明 32 个芯片都真实执行了完整的 Base prompt encoder → 50-step CFG denoise → VAE → PNG 链路，而不只是完成 worker 初始化或 warmup。
+
+### 28.3 200 个同时提交请求结果
+
+测试时间：2026-11-05 10:46:57 至 10:54:11（Asia/Shanghai）。
+
+| 指标 | 结果 |
+|---|---:|
+| 请求总数 | 200 |
+| 客户端并发 | 200 |
+| HTTP 200 / 失败 | 200 / 0 |
+| 有效 PNG | 200 |
+| 总墙钟时间 | 433.557 s |
+| 整机吞吐 | **0.4613 images/s** |
+| 平均响应时间 | 225.999 s |
+| P50 | 247.863 s |
+| P90 | 372.112 s |
+| P95 | 373.659 s |
+| P99 | 433.337 s |
+| 最小 / 最大响应时间 | 62.359 / 433.487 s |
+| 返回图片数据量 | 304,311,302 bytes |
+| 测试期间 worker error_count | 0 |
+| 服务日志错误 | 0 |
+
+worker 0～31 全部参与。8 个 worker 各处理 7 个请求：
+
+```text
+1、3、5、6、15、17、26、29
+```
+
+其余 24 个 worker 各处理 6 个请求，总计：
+
+```text
+8 × 7 + 24 × 6 = 200
+```
+
+调度差异最多 1 个请求，分配均衡。
+
+### 28.4 分轮延迟
+
+32 个 worker 每轮最多同时处理 32 张图片，因此 200 个请求形成 7 轮：
+
+| 轮次 | 数量 | 最小延迟 | 平均延迟 | 最大延迟 |
+|---:|---:|---:|---:|---:|
+| 1 | 32 | 62.359 s | 62.674 s | 62.908 s |
+| 2 | 32 | 124.070 s | 124.458 s | 124.838 s |
+| 3 | 32 | 185.620 s | 186.312 s | 187.011 s |
+| 4 | 32 | 247.751 s | 248.244 s | 249.190 s |
+| 5 | 32 | 309.586 s | 310.267 s | 311.437 s |
+| 6 | 32 | 371.350 s | 372.209 s | 373.784 s |
+| 7 | 8 | 433.212 s | 433.325 s | 433.487 s |
+
+平均响应时间包含排队时间，不表示单张 Base 图片计算需要 226 秒。第一轮 32 张的平均计算/响应时间约 62.67 秒；后续各轮延迟主要是在此基础上累加队列等待时间。
+
+### 28.5 Base 与 Distilled 的性能关系
+
+| 模型 | steps | CFG | 200 请求总耗时 | 吞吐 |
+|---|---:|---|---:|---:|
+| Distilled | 16 | flow-map，无双分支 CFG | 77.820 s | 2.5700 images/s |
+| Base | 50 | guidance 3.5，conditional/unconditional 双 forward | 433.557 s | 0.4613 images/s |
+
+Base 明显更慢是预期行为：步数从 16 增加到 50，并且每个 step 需要 conditional 和 unconditional 两次 Transformer forward。两者不能只按模型名称直接比较单步性能。
+
+### 28.6 原始产物和恢复状态
+
+远端：
+
+```text
+/local/fluxcache/benchmarks/flux3-base-32worker-20261105/
+/local/fluxcache/benchmarks/flux3-base-200requests-20261105/
+```
+
+本地：
+
+```text
+outputs/flux3-base-32worker-20261105/
+outputs/flux3-base-200requests-20261105/
+```
+
+测试结束后已恢复原 Distilled 服务：
+
+```text
+容器：flux3-media-server-test
+worker：32/32 ready
+queue_size：0
+canary_state：healthy
+所有 worker error_count：0
 ```
