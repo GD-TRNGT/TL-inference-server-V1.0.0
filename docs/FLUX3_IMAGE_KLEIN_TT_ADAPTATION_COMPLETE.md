@@ -1,6 +1,6 @@
 # FLUX.3 Image Klein 在 TT-Metal / TL-inference-server 上的完整适配记录
 
-更新时间：2026-11-04
+更新时间：2026-11-05
 
 ## 1. 当前结论
 
@@ -13,7 +13,8 @@
 - 多步 denoise、Qwen3-VL prompt 编码、VAE decode 和 PNG 输出；
 - `tt-media-server` 的 FLUX.3 runner 和 `/v1/images/generations` API；
 - 32 个单芯片 worker 启动、warmup 和真实请求；
-- 64 个并发 T2I 请求，64/64 成功，并确认 worker 0～31 全部实际处理请求。
+- 64 个并发 T2I 历史回归请求，64/64 成功；
+- 2026-11-05 完成 200 个同时提交的 T2I 请求测试，200/200 成功，worker 0～31 全部参与且每个处理 6～7 个请求；
 - Base 与 Distilled 两套 `/local/models` 权重的自动识别、独立缓存和单芯片 T2I；
 - 修复 FLUX.3 checkpoint 与 TTNN fused SwiGLU 的权重半区顺序不一致问题；
 - 使用 `a black bird` 分别完成 Base 50-step 和 Distilled 16-step 的真实语义验证。
@@ -26,7 +27,7 @@
 - 服务重启后的历史 image job 恢复和独立图片下载接口。
 - 32 worker 首次同时创建同一模型转换缓存时的跨进程锁和原子发布。
 
-已完成的图片异步任务 API、任务状态管理和 cancel 语义见第 19 节。本文件只描述真实代码、真实修改、真实验证和当前状态，不把早期失败结论当作当前状态。
+已完成的图片异步任务 API、任务状态管理和 cancel 语义见第 20 节。本文件只描述真实代码、真实修改、真实验证和当前状态，不把早期失败结论当作当前状态。
 
 ## 2. 实现环境和代码边界
 
@@ -42,6 +43,8 @@
 镜像：tl-inference-server:flux-3-image-klein-local-20261103-v5
 分支：flux-3-image-klein
 ```
+
+当前容器使用 v5 镜像作为运行环境，同时把 11.2 上最新的 `TL-inference-server/tt-media-server` 和 `tt-metal/models` bind mount 进容器。因此当前运行代码对应本地仓库最新提交；**v5 镜像本体单独启动时不包含 2026-11-04 之后的全部源码修改**，后续正式交付仍应基于当前两个仓库重建新镜像。
 
 模型权重没有复制进 Docker image，而是运行时只读挂载：
 
@@ -522,8 +525,8 @@ HTTP 200：64
 ### 17.3 当前提交状态
 
 ```text
-TL-inference-server：020af3de Add FLUX3 image async jobs and cancel API
-tt-metal：a3550fc781 Complete FLUX3 T2I pipeline integration
+TL-inference-server 功能基线：9ef4e5e03e9f466dd68e222462725577b70ece7b
+tt-metal 功能基线：63d6c1b321194b7d670656b4d8bd3b40bc308176
 分支：flux-3-image-klein
 工作树：clean
 ```
@@ -551,7 +554,8 @@ tt-metal：a3550fc781 Complete FLUX3 T2I pipeline integration
 
 - [已完成] 持久化 `/local/lnn/fluxcache`，复用 TT-Metal JIT、TT-DiT、HF 和编译缓存；
 - [已完成] 32 个单芯片 worker warmup，并完成 64 个并发请求回归；
-- [已完成] 记录单请求约 12.26 秒、64 并发平均约 28.94 秒、最大约 39.89 秒；
+- [历史数据] 早期 64 并发测试记录单请求约 12.26 秒、平均约 28.94 秒、最大约 39.89 秒；该数据来自修复 SwiGLU 和 Distilled flow-map 前的实现，只保留作阶段记录，不作为当前性能基线；
+- [已完成] 2026-11-05 Distilled 1024×1024、16 步、32 worker、200 请求测试：200/200 成功，总耗时 132.499 秒，吞吐 1.5094 images/s，平均响应时间 73.215 秒，P95 121.740 秒；
 - [未完成] matmul blocking/layout、trace 深度优化、功耗和内存峰值专项优化。
 
 ### 18.4 服务工程
@@ -575,9 +579,9 @@ tt-metal：a3550fc781 Complete FLUX3 T2I pipeline integration
 
 本文件的当前状态以第 1 节、第 15～18 节为准；早期单步验证只是完整流程中的一个阶段，不再作为当前总体状态。
 
-## 19. 2026-11-04：异步图片任务与取消实现
+## 20. 2026-11-04：异步图片任务与取消实现
 
-### 19.1 实现位置和作用
+### 20.1 实现位置和作用
 
 | 文件 | 实现内容 |
 |---|---|
@@ -586,7 +590,7 @@ tt-metal：a3550fc781 Complete FLUX3 T2I pipeline integration
 | `tt-media-server/open_ai_api/image.py` | 增加 async submit、job metadata、cancel 和 delete 路由；原同步 `/generations` 保持兼容 |
 | `tt-media-server/utils/job_manager.py` | 复用已有任务状态、队列准入、取消和清理逻辑，不重复实现视频任务管理器 |
 
-### 19.2 请求流程
+### 20.2 请求流程
 
 1. 客户端向 `/v1/images/generations/async` 发送 JSON 请求。
 2. API 创建 `IMAGE` 类型 job，立即返回 `202` 和 job id。
@@ -595,7 +599,7 @@ tt-metal：a3550fc781 Complete FLUX3 T2I pipeline integration
 5. 客户端轮询 `/v1/images/generations/{job_id}`；完成时响应中包含 `images`。
 6. cancel 调用 JobManager 的 cooperative cancellation，并触发现有 scheduler task cleanup。
 
-### 19.3 真实验证结果
+### 20.3 真实验证结果
 
 ```text
 服务：flux3-media-server-test
@@ -608,14 +612,14 @@ mesh：(1,1)
 服务复启后：model_ready=true，canary_state=healthy
 ```
 
-### 19.4 本轮仍明确暂缓
+### 20.4 本轮仍明确暂缓
 
 - [暂缓] 2 芯片和 4 芯片并行、权重分片和通信优化；
 - [暂缓] 与 vLLM/PyTorch 的 Golden Data 精度对齐；
 - [未开始] 专项 matmul/trace/kernel 性能优化；
 - [未完成] 服务重启恢复、独立图片下载接口和长请求压力回归。
 
-## 20. 按实施步骤对应的文件变更索引
+## 21. 按实施步骤对应的文件变更索引
 
 本节是本文件的文件级索引。`修改`表示原有文件中增加或调整了 FLUX.3 逻辑；`新建`表示本次适配新增的文件。路径均以仓库根目录为基准。
 
@@ -726,9 +730,9 @@ models/tt_dit/pipelines/flux3/pipeline_flux3.py:Flux3T2IPipeline.run()
 
 ### 步骤 11：commit 和当前边界
 
-## 21. 2026-11-04：实现 `response_format=file`
+## 22. 2026-11-04：实现 `response_format=file`
 
-### 21.1 实现文件
+### 22.1 实现文件
 
 本次只修改 `TL-inference-server`，`tt-metal` 不需要修改：
 
@@ -738,7 +742,7 @@ models/tt_dit/pipelines/flux3/pipeline_flux3.py:Flux3T2IPipeline.run()
 | `tt-media-server/open_ai_api/image.py` | 增加 Base64 解码、媒体类型选择、单图直接返回、多图 ZIP 打包逻辑。 |
 | `tt-media-server/tests/test_kontext_api.py` | 增加文件响应、默认 Base64 响应和非法格式校验。 |
 
-### 21.2 请求处理流程
+### 22.2 请求处理流程
 
 ```text
 客户端 POST /v1/images/generations
@@ -753,7 +757,7 @@ response_format=file    → Base64 解码为二进制图片
                          → 多张：打包返回 images.zip
 ```
 
-### 21.3 使用方式
+### 22.3 使用方式
 
 单张 PNG：
 
@@ -770,7 +774,7 @@ curl -fS http://127.0.0.1:8000/v1/images/generations \\
 {"prompt":"a red car","response_format":"b64_json"}
 ```
 
-### 21.4 当前验证状态
+### 22.4 当前验证状态
 
 - 本地和 11.2 上的三个 Python 文件已通过 Python AST/字节码语法检查。
 - `response_format` 只接受 `b64_json` 或 `file`。
@@ -796,9 +800,9 @@ working tree clean
 - matmul blocking、trace、layout、功耗和内存峰值专项优化；
 - 服务重启后的历史 image job 恢复和独立下载接口。
 
-## 22. 2026-11-04：实现客户端自定义分辨率
+## 23. 2026-11-04：实现客户端自定义分辨率
 
-### 22.1 修改位置和作用
+### 23.1 修改位置和作用
 
 修改文件：
 
@@ -810,7 +814,7 @@ working tree clean
 
 这样既允许动态 shape，又能确保 VAE 下采样后得到完整 latent patch，避免后续 Transformer 或 VAE 处理不完整 tile。
 
-### 22.2 客户端请求示例
+### 23.2 客户端请求示例
 
 ```bash
 curl --fail-with-body -sS http://127.0.0.1:8000/v1/images/generations \\
@@ -821,7 +825,7 @@ curl --fail-with-body -sS http://127.0.0.1:8000/v1/images/generations \\
 
 可用示例包括 `256×256`、`512×512`、`1024×1024` 和 `768×1024`；例如 `250×256` 会在请求校验阶段被拒绝，因为 250 不是 16 的倍数。
 
-### 22.3 11.2 真实验证
+### 23.3 11.2 真实验证
 
 测试服务为 10.12.11.2 上的 `flux3-media-server-test`，使用单芯片 `(1,1)` mesh、同步 `/v1/images/generations`、相同 prompt、`seed=42`、`num_inference_steps=50`、`response_format=file` 和 PNG 输出。
 
@@ -833,14 +837,14 @@ curl --fail-with-body -sS http://127.0.0.1:8000/v1/images/generations \\
 
 256×256 的客户端时间包含首次动态 shape/kernel 编译；日志中出现对应动态矩阵 shape 和 kernel 编译信息。编译缓存位于 `/local/lnn/fluxcache`，后续相同 shape 请求应单独进行热态测试。
 
-### 22.4 提交记录
+### 23.4 提交记录
 
 ```text
 tt-metal branch: flux-3-image-klein
 tt-metal commit: 4cccb4584f Support client-defined FLUX3 T2I resolutions
 ```
 
-## 23. 2026-11-04：每种分辨率连续 4 次热态测试
+## 24. 2026-11-04：每种分辨率连续 4 次热态测试
 
 为排除动态 kernel 首次编译影响，对每种分辨率连续请求 4 次，使用相同 prompt、`seed=42`、`num_inference_steps=50` 和 PNG 文件响应。第 1 次作为预热，不计入平均值；平均值取第 2～4 次客户端 `curl` 总耗时。
 
@@ -852,11 +856,11 @@ tt-metal commit: 4cccb4584f Support client-defined FLUX3 T2I resolutions
 
 三种分辨率的 12 次请求均返回 HTTP 200，并生成了对应尺寸的 PNG。热态结果符合预期：256×256 < 512×512 < 1024×1024。之前 256×256 的 42.4204 秒是首次动态 shape/kernel 编译与推理的合计时间，不应与热态 512×512 直接比较。
 
-## 24. 2026-11-04：修复 Prompt 语义错误并兼容 Base/Distilled
+## 25. 2026-11-04：修复 Prompt 语义错误并兼容 Base/Distilled
 
 完整的问题现象、排查顺序、代码根因和验证记录见 `docs/FLUX3_IMAGE_KLEIN_TT_QUALITY_DEBUG.md`。
 
-### 24.1 问题和根因
+### 25.1 问题和根因
 
 在端到端 pipeline、HTTP API 和图片文件输出均成功的情况下，提示词 `a black bird` 生成的是蓝色块或无语义纹理。主要根因位于：
 
@@ -876,7 +880,7 @@ mlp_gate, mlp_up = reader.get_tensor(f"{prefix}.mlp_in.weight").chunk(2, dim=0)
 
 交换只发生在 FLUX.3 checkpoint 映射边界，不修改 checkpoint 文件和通用 SwiGLU 层。
 
-### 24.2 双模型实现
+### 25.2 双模型实现
 
 两套模型都位于 `/local/models`：
 
@@ -887,7 +891,7 @@ mlp_gate, mlp_up = reader.get_tensor(f"{prefix}.mlp_in.weight").chunk(2, dim=0)
 
 `flux3_config.py` 根据 `config.json` 自动识别变体，并校验 Distilled 的 `ref_time_in` 权重。转换 cache 分别命名为 `flux-3-image-klein-base` 和 `flux-3-image-klein-distilled`。
 
-### 24.3 同时修正的实现偏差
+### 25.3 同时修正的实现偏差
 
 - 初始噪声按 `[N,H*W,128]` token 顺序生成并执行 BF16 舍入；
 - Qwen hidden-state 层号从 HF `[4,8,...,32]` 映射到 decoder `[3,7,...,31]`；
@@ -909,7 +913,7 @@ mlp_gate, mlp_up = reader.get_tensor(f"{prefix}.mlp_in.weight").chunk(2, dim=0)
 /local/lnn/TL-inference-server/tt-media-server/tt_model_runners/dit_runners.py
 ```
 
-### 24.4 真实质量验证
+### 25.4 真实质量验证
 
 | 模型 | 请求 | 耗时 | 结果 |
 |---|---|---:|---|
@@ -923,8 +927,127 @@ Base:      c268566ea53a9eec50143e87ec673d9916f491f06c8f74cd22f41a07df9ebf88
 Distilled: 148d521f8b569880379c7bef7019106f1d3a6e28d2b0a5e1ae6fb4fb7cc5da58
 ```
 
-### 24.5 当前限制
+### 25.5 当前限制
 
 32 个 worker 首次启动时会同时转换和写入同一模型 cache，造成严重 I/O 竞争。当前质量回归使用单 worker 完成。恢复 32 worker 前，应先由单进程预生成 Base 和 Distilled cache，或实现跨进程锁、临时目录写入和原子 rename。
 
-当前 `flux3-media-server-test` 运行 Distilled 模型 `/local/models/flux-3-image-klein`，单 worker、单芯片。切换到 Base 只需要更换模型路径并使用对应 cache。
+该节质量回归当时使用单 worker；截至 2026-11-05，`flux3-media-server-test` 已切换为 Distilled 模型的 32 个单芯片 worker。切换到 Base 仍只需要更换模型路径并使用对应 cache。
+
+## 26. 2026-11-05：32 worker、200 请求并发性能验证
+
+### 26.1 测试环境
+
+```text
+机器：10.12.11.2 / my01-galaxy02
+硬件：Blackhole Galaxy，32 个芯片
+模型：/local/models/flux-3-image-klein（Distilled）
+镜像：tl-inference-server:flux-3-image-klein-local-20261103-v5
+运行代码：bind mount 当前 TL-inference-server 和 tt-metal/models
+worker：32，每个 worker 使用一个芯片，mesh=(1,1)
+DEVICE_IDS=(0),(1),...,(31)
+TT_MM_THROTTLE_PERF=0
+TT_METAL_TDP_LIMIT_WATTS=160
+TT_DIT_CACHE_DIR=/local/fluxcache/tt_dit_cache
+```
+
+开始前停止单 worker 容器，执行 `tt-smi -r all`，再用已有 Distilled 转换 cache 启动 32 worker。32 个 worker 从容器启动到全部 ready 约 89 秒；第一个 worker 于 `2026-11-05 08:48:30`（Asia/Shanghai）ready，最后一个于 `08:48:33` ready。
+
+### 26.2 32 路预热
+
+正式测试前同时提交 32 个请求，确认每个 worker 都进入端到端推理：
+
+| 指标 | 结果 |
+|---|---:|
+| 请求 | 32 |
+| 成功/失败 | 32 / 0 |
+| worker 使用情况 | 0～31 每个恰好处理 1 个 |
+| 总耗时 | 22.587 s |
+| 吞吐 | 1.4168 images/s |
+| 平均延迟 | 21.573 s |
+| P95 | 22.477 s |
+| 最大排队深度 | 5 |
+
+### 26.3 200 请求参数
+
+200 个客户端线程通过同一个释放屏障，在约 `45.7 ms` 内把请求全部发出：
+
+```json
+{
+  "prompt": "a black bird",
+  "num_inference_steps": 16,
+  "width": 1024,
+  "height": 1024,
+  "response_format": "file",
+  "image_return_format": "JPEG",
+  "seed": "10000..10199"
+}
+```
+
+测试时间：`2026-11-05 08:51:43` 至 `08:53:56`（Asia/Shanghai）。
+
+### 26.4 总体性能结果
+
+| 指标 | 结果 |
+|---|---:|
+| 请求总数 | 200 |
+| HTTP 200 | 200 |
+| 失败 | 0 |
+| JPEG 响应 | 200 |
+| 总墙钟时间 | 132.499 s |
+| 整机吞吐 | **1.5094 images/s** |
+| 平均响应时间 | 73.215 s |
+| P50 | 78.752 s |
+| P90 | 120.824 s |
+| P95 | 121.740 s |
+| P99 | 132.122 s |
+| 最小/最大响应时间 | 21.103 / 132.440 s |
+| 最大观测队列深度 | 168 |
+| 测试期间 ready worker | 始终 32/32 |
+| 测试后 worker error_count | 0 |
+| 返回图片数据量 | 30,817,689 bytes |
+
+### 26.5 32 个 worker 的实际请求分配
+
+服务日志共记录 200 条 `Worker N processing tasks: 1`，worker 0～31 全部出现：
+
+- worker `5、7、13、21、27、28、29、30`：每个处理 7 个请求；
+- 其余 24 个 worker：每个处理 6 个请求；
+- 合计：`8×7 + 24×6 = 200`。
+
+因此这不是单 worker 或少数 worker 处理 200 请求，32 个芯片都实际执行了完整 T2I 请求，调度差异最多只有 1 个请求。
+
+### 26.6 排队分轮特征
+
+按客户端响应时间从小到大，每 32 个请求形成一轮：
+
+| 轮次 | 数量 | 最小 | 平均 | 最大 |
+|---:|---:|---:|---:|---:|
+| 1 | 32 | 21.10 s | 22.18 s | 24.06 s |
+| 2 | 32 | 41.07 s | 42.98 s | 45.02 s |
+| 3 | 32 | 58.00 s | 62.80 s | 65.31 s |
+| 4 | 32 | 72.52 s | 81.44 s | 84.69 s |
+| 5 | 32 | 87.34 s | 99.39 s | 103.65 s |
+| 6 | 32 | 103.95 s | 116.98 s | 121.95 s |
+| 7 | 8 | 122.02 s | 127.27 s | 132.44 s |
+
+平均响应时间 73.215 秒包含排队时间，不能理解为单张图片计算需要 73 秒。按整机吞吐折算，32-worker 稳态等效为每 21.20 秒完成一组 32 张图片。相对先前单 worker Distilled 17.45 秒数据，32 路吞吐扩展效率约为 82.3%；损失主要来自共享主机 I/O、CPU/postprocess、请求调度和 32 设备同时执行时的系统竞争。
+
+### 26.7 原始产物
+
+远端：
+
+```text
+/local/lnn/fluxcache/benchmarks/flux3-200-requests-20261105/
+```
+
+本地：
+
+```text
+outputs/flux3-200-requests-20261105/summary.json
+outputs/flux3-200-requests-20261105/requests.jsonl
+outputs/flux3-200-requests-20261105/liveness.jsonl
+outputs/flux3-200-requests-20261105/server-window.log
+outputs/flux3-200-requests-20261105/container-inspect.json
+```
+
+当前容器保持运行，32/32 worker ready，队列为 0，canary 为 healthy。

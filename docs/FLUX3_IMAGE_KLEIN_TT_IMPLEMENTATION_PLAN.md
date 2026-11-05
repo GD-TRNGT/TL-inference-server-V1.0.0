@@ -2,12 +2,32 @@
 
 完整阶段性适配记录见：[FLUX3_IMAGE_KLEIN_TT_ADAPTATION_COMPLETE.md](C:/Users/Administrator/Documents/Codex/2026-10-27/https-github-com-tenstorrent-tt-inference/docs/FLUX3_IMAGE_KLEIN_TT_ADAPTATION_COMPLETE.md)
 
-更新时间：2026-11-04
-开发仓库：/local/lnn/TL-inference-server  
-开发分支：flux-3-image-klein  
-当前基线提交：561f80d1（tt-metal：23ef0fd19b）
+更新时间：2026-11-05
+开发仓库：/local/lnn/TL-inference-server
+开发分支：flux-3-image-klein
+当前功能基线：TL-inference-server `9ef4e5e03e9f466dd68e222462725577b70ece7b`；tt-metal `63d6c1b321194b7d670656b4d8bd3b40bc308176`
 
 本文基于当前仓库代码、10.12.11.2 的硬件信息以及已经检查过的 vLLM-Omni FLUX.3 实现整理。目标是在 TT-NN/TT-Metalium 上真正完成模型加载、推理、结果输出、精度对齐和性能优化，而不是只增加一个 API 名称。
+
+## 0. 当前状态和阅读说明
+
+本文前半部分是设计方案，后半部分保留按日期记录的实施历史。历史章节中的“未完成”描述只表示当时状态；当前状态以本节和 `FLUX3_IMAGE_KLEIN_TT_ADAPTATION_COMPLETE.md` 最后章节为准。
+
+| 工作项 | 当前状态 |
+|---|---|
+| Base `/local/models/flux-3-image-klein-base` | 单芯片 T2I 已实现并完成语义验证 |
+| Distilled `/local/models/flux-3-image-klein` | 单芯片 T2I 已实现并完成语义验证 |
+| prompt/steps/seed/width/height | API 已支持 |
+| Base CFG/negative prompt | 已支持 |
+| Distilled flow-map/`ref_time_in` | 已支持 |
+| `response_format=file` | 已支持 PNG/JPEG 文件响应 |
+| 图片异步、轮询、cancel | 已实现 |
+| 32 个单芯片 worker | 已启动并完成 200 请求测试 |
+| 2/4 芯片单请求并行 | 按当前范围暂缓 |
+| Golden Data 逐层数值对齐 | 按当前范围暂缓 |
+| 32 worker 首次共同创建 cache | 未解决；应预生成 cache 或增加跨进程锁 |
+
+2026-11-05 最新性能基线：Distilled、1024×1024、16 步、32 worker、200 个同时提交请求，200/200 成功，总耗时 132.499 秒，吞吐 1.5094 images/s，P50 78.752 秒，P95 121.740 秒，最大队列深度 168。worker 0～31 全部执行请求，每个处理 6～7 个。
 
 ## 1. 目标和现状
 
@@ -33,9 +53,9 @@
 
 tt-smi 当前如果出现设备映射错误，应单独排查 KMD、UMD 和设备状态；不能据此否定 PCI ID 对硬件型号的判断。
 
-### 1.3 当前 TL-inference-server 已有能力
+### 1.3 初始 TL-inference-server 基线（2026-11-02）
 
-当前 flux-3-image-klein 分支已经具备：
+当时的 flux-3-image-klein 分支已经具备：
 
 - tt-media-server 的服务、调度器和 worker 生命周期。
 - /v1/images/generations 图像生成 API。
@@ -45,18 +65,18 @@ tt-smi 当前如果出现设备映射错误，应单独排查 KMD、UMD 和设�
 - TTFlux1Runner、Qwen-Image、SD3.5、MiniMax-H3 等 runner。
 - 通过 models.tt_dit.pipelines.* 调用 TT-Metal/TT-NN 侧 pipeline 的代码边界。
 
-以下内容是制定计划时的历史基线；当前 FLUX.3 T2I 已实现，最终状态见本文末尾“2026-11-04 双模型质量修复后的当前状态”：
+以下内容是制定计划时的历史基线；当前 FLUX.3 T2I 已实现，最终状态见第 0 节：
 
 - config/constants.py 中没有 FLUX.3 的模型、runner 和服务映射。
 - runner_fabric.py 中没有 FLUX.3 runner 注册。
 - tt_model_runners 中没有 TTFlux3Runner。
-- 当前仓库没有 models.tt_dit.pipelines.flux3。
-- 当前请求模型只支持单个 image 字段，不能表达多张参考图片。
-- 当前 Blackhole Galaxy 配置中没有经过 FLUX.3 验证的 mesh、L1、trace 和超时参数。
+- 当时仓库没有 models.tt_dit.pipelines.flux3。
+- 当时请求模型只支持单个 image 字段，不能表达多张参考图片。
+- 当时 Blackhole Galaxy 配置中没有经过 FLUX.3 验证的 mesh、L1、trace 和超时参数。
 
-### 1.4 当前 tt-metal 的实际代码基线
+### 1.4 初始 tt-metal 代码基线（2026-11-02）
 
-已检查 11.2 上的 `/local/lnn/tt-metal`。当前分支为 `flux-3-image-klein`，最新提交为 `23ef0fd19b`，已加入 FLUX.3 Transformer、Qwen3-VL 和 VAE 的权重映射代码。
+当时检查了 11.2 上的 `/local/lnn/tt-metal`；分支为 `flux-3-image-klein`，阶段提交为 `23ef0fd19b`，刚加入 FLUX.3 Transformer、Qwen3-VL 和 VAE 的权重映射代码。
 
 当前可以确认的相关实现是：
 
@@ -191,9 +211,9 @@ tt-media-server 适配层
 
 ## 2. 参考实现和代码边界
 
-### 2.0 当前两个仓库的兼容性审计
+### 2.0 初始两个仓库的兼容性审计（历史记录）
 
-当前结论是：**现有 FLUX.1/H3 服务适配接口基本兼容，构建链路尚未绑定到本地 tt-metal，FLUX.3 尚未兼容。**
+当时结论是：**现有 FLUX.1/H3 服务适配接口基本兼容，构建链路尚未绑定到本地 tt-metal，FLUX.3 尚未兼容。** 当前这些缺口已经通过本地 BuildKit context、FLUX.3 pipeline 和 server runner 补齐。
 
 静态代码核对结果：
 
@@ -463,7 +483,7 @@ dtype
 
 这些结果组成 Golden Data，用来区分误差来自 tokenizer/processor、encoder、latent 初始化、position embedding、transformer、scheduler、VAE 还是后处理。
 
-### 阶段 2：实现最小 T2I pipeline（当前阶段，进行中）
+### 阶段 2：实现最小 T2I pipeline（已完成）
 
 第一版只支持：
 
@@ -768,14 +788,16 @@ BF16、FP8、NVFP4 或其他量化路径必须分别建立 Golden Data，不能�
 7. 请求并发：第一版保持 max_batch_size=1，单请求稳定后再考虑批处理。
 8. 缓存：cache key 必须包含 dtype、shape、mesh 和模型版本。
 
-### 6.3 性能记录表
+### 6.3 当前性能记录
 
-| 场景 | 分辨率 | steps | seed | 冷启动 | 首次请求 | 热态请求 | encoder | denoise | VAE | 峰值内存 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| T2I | 1024×1024 | 4 | 42 |  |  |  |  |  |  |  |
-| T2I | 1024×1024 | 20 | 42 |  |  |  |  |  |  |  |
-| I2I-1ref | 1024×1024 | 20 | 42 |  |  |  |  |  |  |  |
-| I2I-4ref | 1024×1024 | 20 | 42 |  |  |  |  |  |  |  |
+| 日期 | 变体 | worker/并发 | 分辨率 | steps | 结果 |
+|---|---|---|---:|---:|---|
+| 2026-11-04 | Base | 1/1 | 1024×1024 | 50 | 68.37 s，语义正确 |
+| 2026-11-04 | Distilled | 1/1 | 1024×1024 | 16 | 17.45 s，语义正确 |
+| 2026-11-05 | Distilled 预热 | 32/32 | 1024×1024 | 16 | 32/32 成功，22.587 s，1.4168 images/s |
+| 2026-11-05 | Distilled 压测 | 32/200 | 1024×1024 | 16 | 200/200 成功，132.499 s，1.5094 images/s，P95 121.740 s |
+
+尚未拆分并记录 encoder、denoise、VAE、host/device copy 和 JPEG 编码的独立耗时；这些仍是下一轮 profiling 工作，而不是本次 200 请求吞吐测试的已完成项。
 
 ## 7. 测试计划
 
@@ -927,7 +949,7 @@ TL-inference-server/main
 
 
 
-## 2026-11-03 实施状态修订
+## 附录 A：2026-11-03 实施状态修订
 
 | 项目 | 状态 | 证据 |
 |---|---|---|
@@ -941,7 +963,7 @@ TL-inference-server/main
 → PNG → API runner”的顺序推进；不能把 transformer 权重映射通过当成端到端
 T2I 已完成。
 
-## 2026-11-03 缓存持久化和 v4 镜像任务
+## 附录 B：2026-11-03 缓存持久化和 v4 镜像任务
 
 ### 已完成
 
@@ -996,7 +1018,7 @@ sudo docker buildx build --load \
 8. 2 芯片、4 芯片 mesh 和权重分片；
 9. 性能优化、kernel cache/trace、并发和内存峰值测试。
 
-## 2026-11-03 v4 实际验证结论
+## 附录 C：2026-11-03 v4 实际验证结论
 
 v4 镜像已经用本地两个仓库构建并加载成功：
 
@@ -1035,7 +1057,7 @@ tensor。由此可以确认 `/local/lnn/fluxcache` 已经真正承载转换缓�
 2/4 芯片扩展和精度对齐按当前任务要求暂缓；matmul/trace 专项性能优化、服务重启
 恢复和独立图片下载接口仍未完成。
 
-## 2026-11-04 执行状态更新
+## 附录 D：2026-11-04 执行状态更新
 
 ### 图片文件响应 API：`response_format=file`
 
@@ -1089,7 +1111,7 @@ curl -fS http://127.0.0.1:8000/v1/images/generations \\
 | 工作项 | 状态 | 证据/实现位置 |
 |---|---|---|
 | 单芯片完整 T2I | 已完成 | `pipeline_flux3.py`、`TTFlux3ImageKleinRunner`、HTTP 200 图片输出 |
-| 32 worker 单芯片并行 | 已完成 | `(1,1)` mesh，worker 0～31 warmup 和 64 并发 |
+| 32 worker 单芯片并行 | 已完成 | `(1,1)` mesh；2026-11-05 完成 200 请求，200/200 成功，worker 0～31 各处理 6～7 个 |
 | 持久化 cache | 已完成 | Dockerfile 的 `FLUXCACHE_DIR`、宿主 `/local/lnn/fluxcache` |
 | 图片异步提交 | 已完成 | `open_ai_api/image.py` 的 `/generations/async` |
 | 图片轮询 | 已完成 | `/v1/images/generations/{job_id}` |
@@ -1109,7 +1131,7 @@ curl -fS http://127.0.0.1:8000/v1/images/generations \\
 4. Dockerfile 保持本地 tt-metal BuildKit context 和 `/local/fluxcache` 运行时缓存，模型权重仍只读挂载，不复制进镜像。
 
 
-## 2026-11-03 T2I pipeline 组件映射验证结果
+## 附录 E：2026-11-03 T2I pipeline 组件映射验证结果
 
 | 组件 | 状态 | 实际证据 |
 |---|---|---|
@@ -1144,7 +1166,7 @@ VAE_MAPPING_V3_OK {'source_tensors': 251}
 
 三次容器运行均为 `STATUS=0`。这证明当前 v3 镜像内的本地源码可以在真实 Blackhole 设备上完成三类模型组件的权重转换；仍未证明完整 prompt → denoise → VAE → PNG 的端到端 T2I 运行。
 
-## 2026-11-04 双模型质量修复后的当前状态
+## 附录 F：2026-11-04 双模型质量修复记录
 
 早期章节保留了制定计划和逐步 bring-up 时的历史状态。当前真实状态以本节为准。
 
@@ -1188,4 +1210,4 @@ docs/FLUX3_IMAGE_KLEIN_TT_QUALITY_DEBUG.md
 | 32 worker 首次 cache 创建 | 未完成 | 需预生成 cache 或增加跨进程锁和原子发布 |
 | kernel/trace/layout 专项优化 | 未开始 | 后续 profiling 项目 |
 
-当前 `flux3-media-server-test` 运行 Distilled 模型 `/local/models/flux-3-image-klein`，使用单 worker 和一个芯片。切换 Base 时只需更换模型路径并使用对应 cache，无需复制权重或编写第二套实现。
+该次质量修复验证使用单 worker。截至 2026-11-05，`flux3-media-server-test` 已运行 Distilled 模型的 32 个单芯片 worker，并完成 200 请求并发验证。切换 Base 时只需更换模型路径并使用对应 cache，无需复制权重或编写第二套实现。
