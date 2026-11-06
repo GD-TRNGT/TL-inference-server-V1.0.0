@@ -76,6 +76,26 @@ TT-Metal 仓库：`/local/lnn/tt-metal`，分支：`flux-3-image-klein`
 
 当前状态：**已完成**。使用本地两个已提交仓库构建正式镜像 `tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4`（镜像 ID `sha256:5a16aed14e2d…`，约 32.6 GB）。运行容器只挂载 `/local/models`、`/local/lnn/fluxcache` 和 hugepages；不挂载两个源码目录。
 
+在 10.12.11.2 上从提交源码重建该镜像的完整命令如下。`tt-metal-local` 是 Docker BuildKit 的附加 build context，因此 Dockerfile 使用本地 `tt-metal`，而不是在构建时再 clone 上游仓库：
+
+```bash
+cd /local/lnn/TL-inference-server
+
+DOCKER_BUILDKIT=1 docker build --progress=plain \
+  --build-context tt-metal-local=/local/lnn/tt-metal \
+  --build-arg TT_METAL_COMMIT_SHA_OR_TAG=6926f00a4a \
+  --file tt-media-server/Dockerfile \
+  --tag tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4 \
+  .
+```
+
+构建完成后可确认镜像：
+
+```bash
+docker image inspect tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4 \
+  --format 'ID={{.Id}} CREATED={{.Created}} SIZE={{.Size}}'
+```
+
 ### 3.3 正式镜像验收清单
 
 正式镜像至少执行以下回归：

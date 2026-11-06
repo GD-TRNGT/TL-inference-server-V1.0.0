@@ -47,6 +47,18 @@
 
 构建命令同时使用 `/local/lnn/TL-inference-server` 和 `/local/lnn/tt-metal` 的本地提交版本；运行时没有挂载这两个源码目录。镜像为 `tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4`，对应 TL commit `eca825c5`、TT-Metal commit `6926f00a4a`。
 
+```bash
+cd /local/lnn/TL-inference-server
+DOCKER_BUILDKIT=1 docker build --progress=plain \
+  --build-context tt-metal-local=/local/lnn/tt-metal \
+  --build-arg TT_METAL_COMMIT_SHA_OR_TAG=6926f00a4a \
+  --file tt-media-server/Dockerfile \
+  --tag tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4 \
+  .
+```
+
+这里的 `--build-context tt-metal-local=/local/lnn/tt-metal` 是关键：Dockerfile 会把本地 TT-Metal 作为构建上下文使用；`--build-arg TT_METAL_COMMIT_SHA_OR_TAG=6926f00a4a` 则把镜像内的版本标识固定为本次已验证 commit。
+
 | 模型 | 32 worker | 同步功能 | 异步完成 | cancel | 结果目录 |
 |---|---|---|---|---|---|
 | Distilled | 32/32 ready | T2I、旧单图、1/2/10 图、坏图/11 图校验 | 12-step、256×256 成功并返回 1 张 PNG | 50-step、1024×1024 → `cancelled` | `/local/lnn/fluxcache/official_image_eca825c5_distilled_20261106/` |
