@@ -2,7 +2,14 @@
 #
 # SPDX-FileCopyrightText: © 2025 Tenstorrent USA, Inc.
 
+import base64
+import binascii
+import io
+import math
+import warnings
 from typing import List, Literal, Optional, Tuple, Union
+
+from PIL import Image
 
 from config.settings import get_settings
 from domain.base_request import BaseRequest
@@ -21,6 +28,8 @@ class BaseImageRequest(BaseRequest):
     # FLUX.3 accepts a Base64 string or data URL here.  Other image runners
     # ignore the field unless they explicitly implement reference conditioning.
     reference_image: Optional[str] = Field(default=None)
+    # Ordered references: FLUX.3 permits up to ten images per request.
+    reference_images: Optional[List[str]] = Field(default=None, min_length=1, max_length=10)
     num_inference_steps: Optional[int] = Field(default=20, ge=4, le=50)
     seed: Optional[int] = None
     number_of_images: Optional[int] = Field(default=1, ge=1, le=4)
@@ -65,6 +74,43 @@ class BaseImageRequest(BaseRequest):
         # height (and vice versa), silently changing the aspect ratio.
         if (self.width is None) != (self.height is None):
             raise ValueError("width and height must be provided together")
+        return self
+
+    @model_validator(mode="after")
+    def validate_reference_inputs(self):
+        if self.reference_images is not None:
+            if get_settings().model_runner != "tt-flux.3-image-klein":
+                raise ValueError("reference_images is only supported by the FLUX.3 runner")
+            if self.reference_image is not None or getattr(self, "image", None) is not None:
+                raise ValueError("provide reference_images, reference_image, or image, not more than one")
+            if any(not item.strip() for item in self.reference_images):
+                raise ValueError("reference_images must not contain empty items")
+            if any(item.lower().startswith(("http://", "https://")) for item in self.reference_images):
+                raise ValueError("reference_images must be Base64 or data URLs, not HTTP URLs")
+            for index, payload in enumerate(self.reference_images):
+                encoded = payload.strip()
+                normalised_prefix = ""
+                if encoded.lower().startswith("data:"):
+                    prefix, separator, encoded = encoded.partition(",")
+                    if not separator or not prefix.lower().startswith("data:image/") or not prefix.lower().endswith(";base64"):
+                        raise ValueError(f"reference_images[{index}] must be an image Base64 data URL")
+                    normalised_prefix = prefix.lower() + ","
+                try:
+                    encoded = "".join(encoded.split())
+                    encoded += "=" * (-len(encoded) % 4)
+                    content = base64.b64decode(encoded, validate=True)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", Image.DecompressionBombWarning)
+                        with Image.open(io.BytesIO(content)) as image:
+                            width, height = image.size
+                            image.verify()
+                except (binascii.Error, OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+                    raise ValueError(f"reference_images[{index}] is not a valid Base64 image") from error
+                self.reference_images[index] = normalised_prefix + encoded
+                if len(self.reference_images) > 1:
+                    scale = min(1.0, math.sqrt((1024 * 1024) / (width * height)))
+                    if int(width * scale) < 16 or int(height * scale) < 16:
+                        raise ValueError(f"reference_images[{index}] must retain at least 16 pixels per side after multi-reference resizing")
         return self
 
     @field_validator("image_return_format")

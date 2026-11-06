@@ -586,22 +586,27 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 else requested_guidance
             )
         reference_payload = getattr(request, "reference_image", None)
+        reference_payloads = getattr(request, "reference_images", None)
         legacy_image_payload = getattr(request, "image", None)
-        if reference_payload and legacy_image_payload:
-            raise ValueError("provide only one of reference_image or image")
-        reference_payload = reference_payload or legacy_image_payload
+        if sum(value is not None for value in (reference_payload, reference_payloads, legacy_image_payload)) > 1:
+            raise ValueError("provide only one of reference_images, reference_image, or image")
+        if reference_payload is not None or legacy_image_payload is not None:
+            reference_payloads = [reference_payload if reference_payload is not None else legacy_image_payload]
         reference_images = ()
-        if reference_payload:
-            reference_image = self._image_manager.base64_to_pil_image(
-                reference_payload,
-                target_mode="RGB",
+        if reference_payloads:
+            reference_images = tuple(
+                self._image_manager.base64_to_pil_image(payload, target_mode="RGB")
+                for payload in reference_payloads
             )
-            reference_images = (reference_image,)
             if self._reference_encoder is None:
                 self.logger.info(
                     f"Device {self.device_id}: loading FLUX.3 reference-image VAE encoder"
                 )
-                self._reference_encoder = self.pipeline.create_reference_encoder()
+                self._reference_encoder = self.pipeline.create_reference_encoder(device=self.ttnn_device)
+            self.logger.info(
+                f"Device {self.device_id}: FLUX.3 inference with {len(reference_images)} reference image(s), "
+                f"encoder={getattr(self._reference_encoder, 'backend', 'cpu')}"
+            )
 
         flux_request = Flux3T2IRequest(
             prompt=request.prompt,
@@ -628,7 +633,14 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         ]
 
     def get_pipeline_device_params(self):
-        return {"l1_small_size": 65536, "fabric_config": ttnn.FabricConfig.DISABLED}
+        # Multiple reference/output geometries retain halo/program metadata in
+        # L1_SMALL. The old 64 KiB reservation exhausted this region at 1024p.
+        # Keep at least the space required by the existing DiT static CBs: a
+        # 256 KiB reservation overlaps them on Blackhole and cannot be used.
+        l1_small_size = int(os.environ.get("FLUX3_L1_SMALL_SIZE", "131072"))
+        if not 65536 <= l1_small_size <= 131072 or l1_small_size % 32:
+            raise ValueError("FLUX3_L1_SMALL_SIZE must be 64-128 KiB and a multiple of 32 bytes")
+        return {"l1_small_size": l1_small_size, "fabric_config": ttnn.FabricConfig.DISABLED}
 
 
 class TTQwenImageRunner(TTDiTRunner):

@@ -16,19 +16,28 @@ LABEL maintainer="Igor Djuric <idjuric@tenstorrent.com>"
 LABEL org.opencontainers.image.source=https://github.com/tenstorrent/tt-inference-server
 
 ARG DEBIAN_FRONTEND=noninteractive
-# The image is built from a local tt-metal BuildKit context. Override this with
-# the exact local tt-metal commit at build time.
-# Current FLUX.3 functional baseline example:
-#   --build-arg TT_METAL_COMMIT_SHA_OR_TAG=63d6c1b321194b7d670656b4d8bd3b40bc308176
+# The image is built from a local tt-metal BuildKit context. Pass the exact
+# local source revision at build time and record it with the resulting image.
+# Example: --build-arg TT_METAL_COMMIT_SHA_OR_TAG=<local-tt-metal-git-sha>
 ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
 # FLUX.3 weights are intentionally not copied into the image. Mount the
 # common model root read-only so either supported checkpoint can be selected:
 #   -v /local/models:/local/models:ro
 #   Base:      FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein-base
 #   Distilled: FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein
-# The 32-worker performance run on 2026-11-05 also used these runtime overrides:
+# FLUX.3 runtime selection is deliberately explicit; this Dockerfile does not
+# bake model weights or a default checkpoint into the image:
+#   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein-base
+#   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein
+# 32-worker performance measurements on 2026-11-05 additionally used:
 #   -e TT_MM_THROTTLE_PERF=0
 #   -e TT_METAL_TDP_LIMIT_WATTS=160
+# TTNN reference-image encoding is the FLUX.3 production default. Use CPU
+# only as an explicit fallback when diagnosing device-memory pressure:
+#   -e FLUX3_REFERENCE_ENCODER_BACKEND=cpu
+# The tested L1-small setting is 131072 bytes; 256 KiB conflicts with the DiT
+# static circular-buffer budget:
+#   -e FLUX3_L1_SMALL_SIZE=131072
 
 # make build commit SHA available in the image for reference and debugging
 ENV TT_METAL_COMMIT_SHA_OR_TAG=${TT_METAL_COMMIT_SHA_OR_TAG}
@@ -195,11 +204,12 @@ RUN /bin/bash -c "source ${PYTHON_ENV_DIR}/bin/activate \
     && cd ${TT_METAL_HOME}/tt-vllm-plugin \
     && uv pip install ."
 
-# MiniMax-H3 dispatch branch only: fix_dependencies.sh installs the latest diffusers (which needs
+# Compatibility note: fix_dependencies.sh installs the latest diffusers (which needs
 # huggingface_hub >= 1.32) and tt-vllm-plugin then pins transformers==4.55.0 (huggingface_hub < 1.0),
 # so importing diffusers fails on huggingface_hub.resolve_revision. Restore the transformers and
-# diffusers pins of the tt-metal this image is built on. The vLLM runners in this image expect the
-# older transformers, so this image serves MiniMax-H3 only.
+# diffusers pins of the tt-metal revision used to build this image. These pins preserve the
+# MiniMax-H3 runner dependency set; any future dependency upgrade must regression-test both
+# MiniMax-H3 and FLUX.3 before it is accepted.
 RUN /bin/bash -c "source ${PYTHON_ENV_DIR}/bin/activate \
     && pins=\$(grep -E '^(transformers|diffusers)[[:space:]]*==' ${TT_METAL_HOME}/tt_metal/python_env/requirements-dev.txt | tr -d ' ') \
     && test \$(echo \"\$pins\" | wc -l) -eq 2 \
@@ -315,10 +325,13 @@ ENV TT_METAL_COMMIT_SHA_OR_TAG=${TT_METAL_COMMIT_SHA_OR_TAG} \
 # Persistent host-mounted cache root for FLUX.3. Mount
 # /local/lnn/fluxcache:/local/fluxcache at runtime. This keeps JIT kernels,
 # TT-DiT converted weights, HF/PyTorch caches and temporary compiler files out
-# of the container writable layer.
+# of the container writable layer. FLUX3_COMPONENT_RESIDENCY=resident and
+# FLUX3_REFERENCE_ENCODER_BACKEND=ttnn are validated defaults. FLUX3_MODEL_ROOT
+# remains intentionally unset and must be selected by docker run.
 ENV FLUXCACHE_DIR=${FLUXCACHE_DIR} \
     CACHE_ROOT=${FLUXCACHE_DIR} \
     FLUX3_COMPONENT_RESIDENCY=resident \
+    FLUX3_REFERENCE_ENCODER_BACKEND=ttnn \
     TT_METAL_CACHE=${FLUXCACHE_DIR}/tt-metal-cache \
     TT_METAL_KERNEL_CACHE_PATH=${FLUXCACHE_DIR}/tt-metal-cache \
     TT_DIT_CACHE_DIR=${FLUXCACHE_DIR}/tt_dit_cache \
