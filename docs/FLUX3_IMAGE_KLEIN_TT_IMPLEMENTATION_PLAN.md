@@ -62,7 +62,7 @@ TT-Metal 仓库：`/local/lnn/tt-metal`，分支：`flux-3-image-klein`
 | 检查 tt-metal 改动，按 pipeline/encoder/测试拆分 | 清晰的 Git commits | 单元测试与服务回归通过 |
 | 保留用户已有的无关文件和 swap 文件 | 不误删、不覆盖用户内容 | `git status` 人工复核 |
 
-当前状态：**未完成**。本轮多参考图、TTNN reference encoder、压测脚本及文档改动仍需要整理并 commit。
+当前状态：**已完成**。`tt-metal` 已提交 `6926f00a4a Add FLUX.3 TTNN multi-reference encoder`；`TL-inference-server` 已提交 `eca825c5 Add FLUX.3 multi-reference API and TTNN defaults` 及 `52eee2fc Document FLUX.3 validation and delivery status`。两仓库提交后工作树均为空。
 
 ### 3.2 使用当前源码重建正式镜像
 
@@ -74,7 +74,7 @@ TT-Metal 仓库：`/local/lnn/tt-metal`，分支：`flux-3-image-klein`
 | 运行时挂载 `/local/models` 和 `/local/lnn/fluxcache` | 可复用模型和转换/JIT cache | 容器可启动，不挂源码目录 |
 | Base、Distilled 分别启动 | 两套启动命令 | 健康检查、单请求和文件响应通过 |
 
-当前状态：**部分完成**。已构建 `tl-inference-server:flux-3-image-klein-local-20261105-ttnn-default`，并在不挂载 `TL-inference-server` 或 `tt-metal` 源码目录的条件下完成静态检查、32 worker 就绪和 Distilled T2I 文件响应。该镜像由未提交工作树构建，尚需在源码 commit 后按提交 SHA 重建最终镜像；Base、多参考图和异步/cancel 的正式镜像回归仍待完成。
+当前状态：**已完成**。使用本地两个已提交仓库构建正式镜像 `tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4`（镜像 ID `sha256:5a16aed14e2d…`，约 32.6 GB）。运行容器只挂载 `/local/models`、`/local/lnn/fluxcache` 和 hugepages；不挂载两个源码目录。
 
 ### 3.3 正式镜像验收清单
 
@@ -86,7 +86,7 @@ TT-Metal 仓库：`/local/lnn/tt-metal`，分支：`flux-3-image-klein`
 4. 32 worker 全部 ready；做一轮并发健康验证。
 5. 对比当前性能基线，记录明显回归。
 
-当前状态：**部分完成**。Distilled 的 32 worker 就绪和一条真实 T2I 文件响应已完成；Base、1/2/10 张参考图、异步/轮询/cancel 和并发健康回归仍待在最终镜像上执行。
+当前状态：**已完成**。Base 和 Distilled 分别以 32/32 worker ready 启动；两者均通过 T2I、旧 `reference_image`、`reference_images` 1/2/10 张、非法图片和 11 张图片 422、异步提交/带鉴权轮询完成、1024×1024/50-step cancel。Base 同步 256×256/12-step 热态 T2I 为 2.874 s，单图 3.784 s、双图 3.891 s、十图 4.182 s；Distilled 对应 T2I 1.841 s、单图 2.738 s、双图 2.820 s、十图 2.768 s。测试结果在 `/local/lnn/fluxcache/official_image_eca825c5_{distilled,base}_20261106/`。
 
 ## 4. P1：可靠性和服务工程
 

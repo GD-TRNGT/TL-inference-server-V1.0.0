@@ -26,8 +26,8 @@
 - 2026-11-05 完成 Base 模型 32-worker 全覆盖和 200 个同时提交请求压测：32 个 worker 全部实际执行，200/200 成功、0 错误。
 - 有序 `reference_images` 数组和 1～10 张参考图接入，兼容旧单图字段；Base/Distilled 各 9 个同步、异步及非法请求场景全部通过。
 - 单芯片 TTNN VAE reference encoder、111 个源张量映射、设备端 packing/BN 和条件 token 拼接；两模型含 1024 方图、横图/竖图及切回小图的 22 次 encoder 数值/尺寸切换测试及缓存重载通过。
-- 2026-11-06 用当前两个本地仓库源码构建镜像 `tl-inference-server:flux-3-image-klein-local-20261105-ttnn-default`；镜像本体包含 TTNN reference encoder 默认值，不需要挂载 `TL-inference-server` 或 `tt-metal` 源码目录。
-- 该镜像已完成 32/32 worker 就绪与真实 Distilled T2I 文件响应验证：`a black bird`、256×256、16 step、seed 42 首次请求 34 秒；不同 seed 热态后 3 次均值 1.55 秒；1024×1024、16 step 热态 11.13 秒。
+- 2026-11-06 用已提交的本地仓库源码构建正式镜像 `tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4`（约 32.6 GB）；镜像本体包含 TTNN reference encoder 默认值，不需要挂载 `TL-inference-server` 或 `tt-metal` 源码目录。
+- 该正式镜像已分别完成 Distilled 与 Base 的 32/32 worker 就绪、T2I、1/2/10 张参考图、异步轮询和 cancel 回归；请求图片 API 时需要 `Authorization: Bearer your-secret-key`，`/tt-liveness` 不需要鉴权。
 
 ### 1.1 当前交付状态
 
@@ -38,10 +38,21 @@
 | reference encoder | 已实现并验证 | TTNN 默认；`cpu` 是显式回退，22 次尺寸/缓存切换及服务负载通过 |
 | 异步任务与 cancel | 已实现并验证 | 创建、轮询、取消语义见第 20 节 |
 | 大图与 32-worker 参考图压测 | 已完成 | 32 冷/暖态和 200/200 均通过；结果见 `FLUX3_LARGE_REFERENCE_AND_32_WORKER_BENCHMARK.md` |
-| 正式镜像 | 第一轮已验证 | `tl-inference-server:flux-3-image-klein-local-20261105-ttnn-default` 不挂源码目录即可 32 worker ready 并完成 Distilled T2I；Base、多参考图、异步/cancel 的正式镜像回归仍待补齐 |
-| 源码提交 | 未完成 | 最新 API、runner、TTNN reference encoder、测试和文档改动尚未整理为 Git commits |
+| 正式镜像 | 已完成并验证 | `tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4`；Base/Distilled 均在不挂源码目录时完成 32 worker、T2I、多参考图、async/poll/cancel |
+| 源码提交 | 已完成 | tt-metal `6926f00a4a`；TL-inference-server `eca825c5`、`52eee2fc` |
 | 2/4 芯片单请求并行 | 暂缓 | 当前任务范围不实施 |
 | Golden Data 逐层精度对齐 | 暂缓 | 当前任务范围不实施 |
+
+### 1.1.1 2026-11-06：提交后正式镜像回归
+
+构建命令同时使用 `/local/lnn/TL-inference-server` 和 `/local/lnn/tt-metal` 的本地提交版本；运行时没有挂载这两个源码目录。镜像为 `tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4`，对应 TL commit `eca825c5`、TT-Metal commit `6926f00a4a`。
+
+| 模型 | 32 worker | 同步功能 | 异步完成 | cancel | 结果目录 |
+|---|---|---|---|---|---|
+| Distilled | 32/32 ready | T2I、旧单图、1/2/10 图、坏图/11 图校验 | 12-step、256×256 成功并返回 1 张 PNG | 50-step、1024×1024 → `cancelled` | `/local/lnn/fluxcache/official_image_eca825c5_distilled_20261106/` |
+| Base | 32/32 ready | T2I、旧单图、1/2/10 图、坏图/11 图校验 | 12-step、256×256 成功并返回 1 张 PNG | 50-step、1024×1024 → `cancelled` | `/local/lnn/fluxcache/official_image_eca825c5_base_20261106/` |
+
+同步请求使用 `response_format=file`，成功项返回有效 PNG；非法 Base64 图片和第 11 张图片均在入队前返回 HTTP 422。由于 Dockerfile 的默认 API key 已启用，`/v1/images/*` 请求必须携带 `Authorization: Bearer your-secret-key`；`/tt-liveness` 为公开健康检查接口。测试脚本首次遗漏轮询请求的 Authorization header，造成 401；补齐 header 后 Base 与 Distilled 均成功完成异步轮询，因此该 401 不属于模型或服务功能失败。
 
 ### 1.2 当前未完成工作
 
@@ -50,7 +61,7 @@
 - 服务重启后的历史 image job 恢复和独立图片下载接口；
 - 多小时稳定性、每芯片 DRAM/L1、温度和功耗专项测试；
 - 以 profiling 为依据的 kernel blocking、layout、trace、峰值内存专项优化；
-- 两仓库改动的整理提交；并在提交后的最终镜像上补齐 Base、多参考图、异步/轮询/cancel 回归。
+- 提交后的正式镜像已完成 Base、Distilled、多参考图、异步/轮询/cancel 回归；后续仅需持续性、资源与专项性能优化验证。
 
 ### 1.3 如何阅读本文件
 
@@ -70,12 +81,12 @@
 模型（Base）：/local/models/flux-3-image-klein-base
 模型（Distilled）：/local/models/flux-3-image-klein
 持久化缓存：/local/lnn/fluxcache
-服务容器：flux3-media-server-ttnn-default-validation
-镜像：tl-inference-server:flux-3-image-klein-local-20261105-ttnn-default
+服务容器：flux3-media-server-eca825c5-6926f00a4-base-validation（Base；Distilled 验证容器已停止保留）
+镜像：tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4
 分支：flux-3-image-klein
 ```
 
-历史 `flux3-media-server-test` 使用 v5 镜像并依赖源码 bind mount，已在 2026-11-06 停止保留。当前验证容器不挂载 `TL-inference-server` 或 `tt-metal` 源码目录，只挂载模型、缓存和 hugepage；镜像本体已完成静态代码检查、32 worker 启动和 Distilled T2I 验证。该镜像仍对应未提交工作树，因此源码 commit 后必须以提交 SHA 重建最终交付镜像，并补齐 Base、多参考图和异步/cancel 回归。
+历史 `flux3-media-server-test` 使用 v5 镜像并依赖源码 bind mount，已在 2026-11-06 停止保留。当前正式镜像验证容器不挂载 `TL-inference-server` 或 `tt-metal` 源码目录，只挂载模型、缓存和 hugepage；已使用提交 SHA 构建的最终镜像完成 Base、Distilled、多参考图和异步/cancel 回归。
 
 模型权重没有复制进 Docker image，而是运行时只读挂载：
 
