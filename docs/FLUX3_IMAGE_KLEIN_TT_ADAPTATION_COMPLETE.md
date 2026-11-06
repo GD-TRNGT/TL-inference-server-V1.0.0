@@ -1,6 +1,6 @@
 # FLUX.3 Image Klein 在 TT-Metal / TL-inference-server 上的完整适配记录
 
-更新时间：2026-11-05
+更新时间：2026-11-06
 
 ## 1. 当前结论
 
@@ -24,14 +24,39 @@
 - 使用 `a black bird` 分别完成 Base 50-step 和 Distilled 16-step 的真实语义验证。
 - 常驻组件和设备端 denoise 优化后，重新实测 Distilled 16-step 及 Base 50-step CFG，两者均返回语义正确的 1024×1024 PNG。
 - 2026-11-05 完成 Base 模型 32-worker 全覆盖和 200 个同时提交请求压测：32 个 worker 全部实际执行，200/200 成功、0 错误。
+- 有序 `reference_images` 数组和 1～10 张参考图接入，兼容旧单图字段；Base/Distilled 各 9 个同步、异步及非法请求场景全部通过。
+- 单芯片 TTNN VAE reference encoder、111 个源张量映射、设备端 packing/BN 和条件 token 拼接；两模型含 1024 方图、横图/竖图及切回小图的 22 次 encoder 数值/尺寸切换测试及缓存重载通过。
+- 2026-11-06 用当前两个本地仓库源码构建镜像 `tl-inference-server:flux-3-image-klein-local-20261105-ttnn-default`；镜像本体包含 TTNN reference encoder 默认值，不需要挂载 `TL-inference-server` 或 `tt-metal` 源码目录。
+- 该镜像已完成 32/32 worker 就绪与真实 Distilled T2I 文件响应验证：`a black bird`、256×256、16 step、seed 42 首次请求 34 秒；不同 seed 热态后 3 次均值 1.55 秒；1024×1024、16 step 热态 11.13 秒。
 
-当前明确暂缓或未完成：
+### 1.1 当前交付状态
 
-- 2 芯片和 4 芯片 mesh 的权重分片、通信和性能验证；
-- 与 PyTorch/vLLM/官方参考实现的逐层精度对齐；
-- 更深层的 kernel blocking、layout、trace、峰值内存和功耗专项优化；
-- 服务重启后的历史 image job 恢复和独立图片下载接口。
-- 32 worker 首次同时创建同一模型转换缓存时的跨进程锁和原子发布。
+| 交付项 | 当前状态 | 证据或边界 |
+|---|---|---|
+| Base 与 Distilled T2I | 已实现并验证 | 单芯片、32-worker、文件响应和 200 请求压测均已完成 |
+| 多参考图 | 已实现并验证 | 1～10 张有序参考图；两模型大图矩阵各 14/14 通过 |
+| reference encoder | 已实现并验证 | TTNN 默认；`cpu` 是显式回退，22 次尺寸/缓存切换及服务负载通过 |
+| 异步任务与 cancel | 已实现并验证 | 创建、轮询、取消语义见第 20 节 |
+| 大图与 32-worker 参考图压测 | 已完成 | 32 冷/暖态和 200/200 均通过；结果见 `FLUX3_LARGE_REFERENCE_AND_32_WORKER_BENCHMARK.md` |
+| 正式镜像 | 第一轮已验证 | `tl-inference-server:flux-3-image-klein-local-20261105-ttnn-default` 不挂源码目录即可 32 worker ready 并完成 Distilled T2I；Base、多参考图、异步/cancel 的正式镜像回归仍待补齐 |
+| 源码提交 | 未完成 | 最新 API、runner、TTNN reference encoder、测试和文档改动尚未整理为 Git commits |
+| 2/4 芯片单请求并行 | 暂缓 | 当前任务范围不实施 |
+| Golden Data 逐层精度对齐 | 暂缓 | 当前任务范围不实施 |
+
+### 1.2 当前未完成工作
+
+- 32 worker 首次同时创建同一模型转换缓存的跨进程锁和原子发布；
+- TTNN reference encoder 的自动 OOM 降级；目前 TTNN 默认，仍可显式选择 `cpu` 回退；
+- 服务重启后的历史 image job 恢复和独立图片下载接口；
+- 多小时稳定性、每芯片 DRAM/L1、温度和功耗专项测试；
+- 以 profiling 为依据的 kernel blocking、layout、trace、峰值内存专项优化；
+- 两仓库改动的整理提交；并在提交后的最终镜像上补齐 Base、多参考图、异步/轮询/cancel 回归。
+
+### 1.3 如何阅读本文件
+
+第 2～17 节记录从模型资产、TTNN Transformer、权重映射、prompt/VAE、pipeline、Docker、服务接入到单请求与并发验证的完整实施过程。第 20 节记录异步任务和取消；第 22～28 节记录文件响应、分辨率、双模型质量修复和性能优化；第 29～31 节记录单图、多图、TTNN reference encoder、大尺寸和 32-worker 参考图验证。
+
+本轮多参考图和 TTNN VAE 的逐文件/方法说明见 `FLUX3_MULTI_REFERENCE_AND_TTNN_VAE_IMPLEMENTATION.md`；大尺寸修复及负载结果见 `FLUX3_LARGE_REFERENCE_AND_32_WORKER_BENCHMARK.md`。第 29、30 节的“未完成”描述仅表示当时的历史阶段，不代表当前状态。原 8000 服务在大图压测后已恢复并通过 32/32 ready、queue=0、canary healthy 核验；自本次默认值修订起，reference backend 默认 TTNN，只有显式设置 `FLUX3_REFERENCE_ENCODER_BACKEND=cpu` 才使用 CPU 回退。
 
 已完成的图片异步任务 API、任务状态管理和 cancel 语义见第 20 节。本文件只描述真实代码、真实修改、真实验证和当前状态，不把早期失败结论当作当前状态。
 
@@ -45,12 +70,12 @@
 模型（Base）：/local/models/flux-3-image-klein-base
 模型（Distilled）：/local/models/flux-3-image-klein
 持久化缓存：/local/lnn/fluxcache
-服务容器：flux3-media-server-test
-镜像：tl-inference-server:flux-3-image-klein-local-20261103-v5
+服务容器：flux3-media-server-ttnn-default-validation
+镜像：tl-inference-server:flux-3-image-klein-local-20261105-ttnn-default
 分支：flux-3-image-klein
 ```
 
-当前容器使用 v5 镜像作为运行环境，同时把 11.2 上最新的 `TL-inference-server/tt-media-server` 和 `tt-metal/models` bind mount 进容器。因此当前运行代码对应本地仓库最新提交；**v5 镜像本体单独启动时不包含 2026-11-04 之后的全部源码修改**，后续正式交付仍应基于当前两个仓库重建新镜像。
+历史 `flux3-media-server-test` 使用 v5 镜像并依赖源码 bind mount，已在 2026-11-06 停止保留。当前验证容器不挂载 `TL-inference-server` 或 `tt-metal` 源码目录，只挂载模型、缓存和 hugepage；镜像本体已完成静态代码检查、32 worker 启动和 Distilled T2I 验证。该镜像仍对应未提交工作树，因此源码 commit 后必须以提交 SHA 重建最终交付镜像，并补齐 Base、多参考图和异步/cancel 回归。
 
 模型权重没有复制进 Docker image，而是运行时只读挂载：
 
@@ -99,6 +124,10 @@ FLUX.3 适配不是只修改 server 仓库。server 负责把请求送进 pipeli
   -> 三类模型组件按 worker 常驻
   -> schedule 缓存和设备端 CFG / Euler / latent
   -> 32 并发与 200 同时提交性能回归
+  -> 单参考图 CPU image_cond 条件推理
+  -> 有序多参考图 API 与独立预处理
+  -> TTNN VAE encoder、动态 GroupNorm 与尺寸相关卷积权重准备
+  -> Base/Distilled 数值、同步/异步验证并恢复原服务
 ```
 
 以下各节按这个真实顺序说明每一步修改了什么、在哪个文件、如何验证以及结果是什么。
@@ -510,6 +539,8 @@ HTTP 200：64
 | `tt-media-server/open_ai_api/models.py` | 将 FLUX.3 runner 接入 `BaseImageRequest` |
 | `tt-media-server/tt_model_runners/dit_runners.py` | 增加 `TTFlux3ImageKleinRunner`、绝对模型路径读取、pipeline 调用和 list 响应修复；每个 worker 常驻 prompt encoder、Transformer、VAE，并提供 `per_request` 回退模式 |
 | `tt-media-server/tt_model_runners/runner_fabric.py` | 注册 FLUX.3 runner 工厂 |
+| `tt-media-server/domain/image_generate_request.py` | 参考图单/数组字段、1～10 张约束、入队前图片及字段冲突校验；图片文件响应参数 |
+| `tt-media-server/tests/test_flux3_reference_api.py` | 有图/无图、数量、坏图片、字段互斥、编码归一化及非 FLUX.3 runner 测试，17/17 通过 |
 
 ### 17.2 tt-metal
 
@@ -519,9 +550,11 @@ HTTP 200：64
 | `models/tt_dit/models/transformers/transformer_flux3.py` | Transformer、mode block、single block、forward、权重映射 |
 | `models/tt_dit/pipelines/flux3/__init__.py` | FLUX.3 pipeline 包导出 |
 | `models/tt_dit/pipelines/flux3/flux3_config.py` | checkpoint 配置和模型资产校验 |
-| `models/tt_dit/pipelines/flux3/flux3_components.py` | Qwen3-VL、VAE 组件和权重加载 |
+| `models/tt_dit/pipelines/flux3/flux3_components.py` | Qwen3-VL、VAE 组件和权重加载；单/多图预处理、CPU/TTNN reference encoder、SHA256 区分缓存 |
 | `models/tt_dit/pipelines/flux3/flux3_prompt_encoder.py` | tokenizer、chat template、M-RoPE、Qwen3-VL prompt encoder 调用 |
-| `models/tt_dit/pipelines/flux3/pipeline_flux3.py` | 外部 embedding、Qwen3-VL 文本路径、多步 denoise、VAE decode、PNG 输出；schedule 缓存、设备端 CFG/Euler 和 denoise latent 常驻 |
+| `models/tt_dit/pipelines/flux3/pipeline_flux3.py` | 外部 embedding、Qwen3-VL 文本路径、多步 denoise、VAE decode、PNG 输出；schedule 缓存、设备端 CFG/Euler 和 denoise latent 常驻；reference backend 选择、条件 token 设备拼接 |
+| `models/tt_dit/models/vae/flux3_vae_encoder.py` | 新增 TTNN reference encoder；111 源张量映射、动态核心网格、几何变化重准备卷积权重、packing/BN |
+| `models/tt_dit/tests/flux3/test_flux3_reference_preprocessing.py` | 新增多图裁剪、缩放和小图边界测试；与 reference RoPE 测试合计 4/4 通过 |
 | `models/tt_dit/pipelines/flux3/sampling.py` | latent、patchify、RoPE、schedule、time embedding、Euler step |
 | `models/tt_dit/pipelines/flux3/t2i_contract.py` | T2I 请求数据结构 |
 | `models/tt_dit/pipelines/flux3/test_one_step.py` | 真实 Transformer 单步验证 |
@@ -534,15 +567,15 @@ HTTP 200：64
 ### 17.3 当前提交状态
 
 ```text
-TL-inference-server 功能基线：e46186a9160d48344ec1f706f6ff4efd6f6c53ba
-tt-metal 功能基线：3ff5dc122dae38d173870cf5525e9ed96d877c33
+TL-inference-server 当前 HEAD：9931070523c19dff7e32a15ebf65b91e105443c2
+tt-metal 当前 HEAD：06f77cf6bc51ee3a63027ffc8e2c19125b51004c
 分支：flux-3-image-klein
-工作树：clean
+工作树：本轮多参考图、TTNN encoder 和文档修改尚未提交
 ```
 
-两个 commit 均已在 10.12.11.2 本地仓库创建，尚未 push 到远端 origin。
+上述为当前 HEAD，不代表本轮新功能已包含在提交中。本轮没有执行 commit 或 push，运行时源码挂载包含工作树的修改。
 
-## 18. 尚未完成和下一步
+## 18. 完整实现内容与后续状态
 
 ### 18.1 多芯片
 
@@ -581,6 +614,16 @@ tt-metal 功能基线：3ff5dc122dae38d173870cf5525e9ed96d877c33
 - [已完成] 真实服务验证 50-step cancel 和 12-step async completion；
 - [未完成] image job 的独立 download 文件接口、服务重启恢复和长请求超时专项测试。
 
+### 18.5 参考图片条件推理
+
+- [已完成] `reference_images` 接收 1～10 张有序参考图，兼容旧单图参数，非法数组/坏图片入队前拒绝。
+- [已完成] 单图填充、多图裁剪策略，以及每图独立参考位置轴。
+- [已完成] 单芯片 TTNN VAE encoder、packing/BN 和设备条件 token 拼接；可显式选择 CPU 兼容 backend。
+- [已完成] 两模型最终各 11 次、共 22 次 encoder 数值/尺寸切换检查，含 1024 方图/横竖图，缓存重载成功。
+- [已完成] 两模型各 9 个 HTTP 场景；参考图数量实测 1、2、10，两图异步完成。
+- [已完成] Base 与 Distilled 各 14/14 大图矩阵、32 首次/32 暖态、200/200 参考图请求通过；当前结果见第 31 节，不等同于已有 T2I 压测。
+- [未实现] 自动 OOM 切换 reference backend、prompt upsampler 和首次转换缓存跨进程锁。
+
 ## 19. 主要验证产物
 
 ```text
@@ -594,7 +637,7 @@ tt-metal 功能基线：3ff5dc122dae38d173870cf5525e9ed96d877c33
 /local/fluxcache/benchmarks/flux3-resident-device-euler-200x200.json
 ```
 
-本文件的当前状态以第 1 节、第 15～18 节为准；早期单步验证只是完整流程中的一个阶段，不再作为当前总体状态。
+本文件的当前状态以第 1、17～18、30 节为准；早期单步验证只是完整流程中的一个阶段，不再作为当前总体状态。
 
 ## 20. 2026-11-04：异步图片任务与取消实现
 
@@ -1460,6 +1503,8 @@ canary_state：healthy
 
 ## 29. 单参考图 + prompt 条件推理实现（2026-11-05）
 
+> 历史阶段：本节描述扩展多图/TTNN encoder 之前的单图 CPU 实现；“尚未实现”只表示该阶段状态。后续完成内容和当前边界见第 30 节。
+
 ### 29.1 实现依据和边界确认
 
 复核 10.0.28.22 上 vLLM-Omni FLUX.3 实现所对应的参考代码后，确认核心生成链路是：
@@ -1550,3 +1595,95 @@ json.dump({
 - FLUX2/FLUX.3 VAE encoder 的 TTNN 实现；当前是 PyTorch CPU fallback。
 - prompt upsampler 服务化；当前 prompt 原样送入核心 text encoder。
 - Base 50-step 模型的单参考图完整 smoke test；本次真实请求使用 Distilled 模型。
+
+## 30. 多参考图与 TTNN VAE encoder 完整接入（2026-11-05）
+
+### 30.1 核实能力和实现顺序
+
+核对两套 `/local/models` README，均明确支持最多 10 张参考图。随后依次开放有序数组、实现独立多图预处理、建立 TTNN encoder、映射权重、设备端拼接条件、处理实机问题，最后验证两模型同步/异步并恢复原服务。
+
+### 30.2 本轮具体文件和实现位置
+
+下表路径相对于各自 `/local/lnn` 仓库；函数名和行号对应本轮源码。
+
+| 仓库/文件 | 实现位置 | 修改内容及作用 |
+|---|---|---|
+| TL：`tt-media-server/domain/image_generate_request.py` | `reference_images` 第 32 行；`validate_reference_inputs()` 第 80 行 | 1～10 张、字段互斥、Base64/PIL 校验、编码归一化；非法数组入队前 422 |
+| TL：`tt-media-server/tt_model_runners/dit_runners.py` | `TTFlux3ImageKleinRunner.run()` 第 575 行起 | 有序解码，传入现有 MeshDevice，按 worker 懒加载/复用 encoder，记录实际 backend |
+| TL：`tt-media-server/tests/test_flux3_reference_api.py` | fixture 与各参数校验测试 | 17 项有图/无图、边界、坏输入和其他 runner 拒绝数组测试 |
+| Metal：`models/tt_dit/pipelines/flux3/flux3_components.py` | 多图预处理第 64 行；`Flux3TTNNReferenceEncoder` 第 148 行 | 每图面积上限和 16 网格裁剪；检查配置、111 源张量加载、VAE 哈希 cache key，输出设备 token |
+| Metal：`models/tt_dit/models/vae/flux3_vae_encoder.py`（新增） | `__init__` 第 141 行；权重映射第 168 行；`forward` 第 180 行 | 单芯片 encoder、quant_conv、posterior mean、TT packing/BN；仅适配本模块的 GN/Conv；行号已随大图修复更新 |
+| Metal：`models/tt_dit/pipelines/flux3/pipeline_flux3.py` | `create_reference_encoder()` 第 87 行；条件处理第 308 行起 | `cpu|ttnn` backend；TT token 不经主机往返，多图设备 concat，逐图独立 RoPE |
+| Metal：`models/tt_dit/tests/flux3/test_flux3_reference_preprocessing.py`（新增） | 3 个预处理测试 | 与原 reference RoPE 测试合计 4 项 |
+
+图片解码、PIL/NumPy 预处理和 RoPE 构造仍在 CPU；TTNN backend 的 encoder、packing、BN、条件 token 拼接在 TT。不是“整个请求完全没有 CPU”，也不是将图片强制送入 Qwen 视觉编码器。
+
+### 30.3 实机问题及修复
+
+1. GroupNorm 在小空间尺寸上默认 8×8 核心网格不匹配：新增 `_ReferenceGroupNorm`，按空间 tile 数选可整除行数，全部测试尺寸通过。
+2. 同一 encoder 从 16×16 切到 64×64，PCC 只有 0.03829394：卷积 prepared 权重依赖输入几何；新增 `_ReferenceConv2d`，几何变化时释放并重新准备，修复后 PCC 0.99988747，大图后切回小图也通过。
+3. root 数值容器产生不可写的 kernel 目录：只修复本轮缓存 ownership，后续统一 UID 1000；未删除缓存、未 reset。
+4. Base 临时容器使用未注册模型名退出：两变体均用 `MODEL=FLUX.3-Image-Klein`，通过权重目录区分；后续保留日志验证成功。
+5. 主机型测试受镜像缺少根测试树及默认 JUnit 写权限影响：仅本组纯预处理/RoPE 测试限制 conftest 并覆盖 addopts，最终 exit 0。
+
+### 30.4 最终验证与产物
+
+- 请求模型测试 17/17；预处理/RoPE 测试 4/4。
+- Base/Distilled 各执行 `16×16 → 64×64 → 128×96 → 256×256 → 512×384 → 64×64` encoder 比较，12/12 通过；PCC 为 0.999809～0.999932，relative RMSE 为 0.01175～0.01997，缓存重载通过。
+- 两模型各 9 个 HTTP 场景，18/18 通过：T2I、旧单图、新单图、两图、交换顺序、10 图均 200 PNG；11 图/坏图片 422；两图异步 202 后 completed。
+- 参考图片均缩至 64×64，输出 256×256；10 张是两张资产交替。Base 50 步 CFG 3.5，Distilled 12 步，seed 42。
+- 同模型旧/新单图 PNG 哈希相同；交换两图顺序 PNG 哈希不同。这里是兼容性与功能验证，不是全模型语义/精度验收。
+
+结果保存于 `/local/lnn/fluxcache/ttnn_reference_validation_20261105/20261105-054733/results.json`、`multiref_ttnn_base_verified_20261105/` 和 `multiref_ttnn_distilled_verified_20261105/`。最终日志目录为 `/local/lnn/fluxcache/logs/multiref_validation_20261105/20261105-054705/`。
+
+### 30.5 小图阶段的部署与未完成边界（历史）
+
+该历史阶段恢复后的 `flux3-media-server-test` 使用 CPU 默认 backend；该记录不代表当前配置。自本次默认值修订起，reference backend 默认 TTNN，只有显式设置 `FLUX3_REFERENCE_ENCODER_BACKEND=cpu` 才使用 CPU 回退。
+
+该小图阶段当时尚未逐项测试 3～9 张、10 张大图容量和 32-worker 参考图性能；这些项目的当前结论见第 31 节。自动 OOM fallback 仍未实现。已有 T2I 200 请求压测不能替代参考图测试。本轮修改为未提交工作树，没有新建镜像或执行 commit/push。
+
+完整步骤、准确数值表、单次 HTTP 时间、启动参数、客户端 curl 和复现脚本见 `FLUX3_MULTI_REFERENCE_AND_TTNN_VAE_IMPLEMENTATION.md`。
+
+## 31. 大尺寸多参考图与 32-worker 参考图压测（2026-11-05）
+
+本节更新第 30 节小图阶段的验证范围。完整参数、逐项结果、失败日志、修复过程与性能统计见 `FLUX3_LARGE_REFERENCE_AND_32_WORKER_BENCHMARK.md`，不使用历史 T2I 压测替代参考图请求。
+
+### 31.1 实机暴露的问题与代码修改
+
+| 文件与实现入口 | 怎么修改 | 作用 |
+|---|---|---|
+| `/local/lnn/tt-metal/models/tt_dit/models/vae/flux3_vae_encoder.py:21`，`_reference_width_slice_limit()` | 按 kernel/stride/padding 计算输出宽，再计算 tiled 切片上限 | 下采样不能按输入宽沿用 decoder 切片数 |
+| 同文件 `:47`，`_ReferenceConv2d.__init__()` | 按实例复制默认/mesh 切片表；stride-2 表中的片数按输出宽限制 | 修复 512 方图出现 4 片超过 2 片上限，且不改公共 decoder 配置 |
+| 同文件 `:66`，`_ReferenceConv2d.forward()` | 大面积 RGB 输入使用显式 DRAM_HEIGHT 切片，首次从原始 OIHW 权重执行并缓存 prepared weight/bias；尺寸变化仍重新准备 | 规避 1024 RGB 输入卷积数值失真，保持后续请求复用 |
+| `/local/lnn/TL-inference-server/tt-media-server/tt_model_runners/dit_runners.py:635`，`get_pipeline_device_params()` | 加入 `FLUX3_L1_SMALL_SIZE`，默认 131072 B；限制 64～128 KiB、32 B 对齐 | 为大尺寸 halo/元数据预留空间，避免 256 KiB 试验侵占 DiT 静态 CB |
+| `/local/lnn/tt-metal/models/tt_dit/tests/flux3/test_flux3_reference_conv_slicing.py`（新建） | 12 项输出宽、padding/stride 边界和公共表不变测试 | 回归下采样片数修复 |
+| `/local/lnn/TL-inference-server/tt-media-server/tests/test_flux3_device_config.py`（新建） | 9 项默认预留、可配预留及非法值测试 | 检查设备参数和错误提示 |
+| `/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_components.py:137`，`_refresh_reference_program_cache()`；`:191`，`Flux3TTNNReferenceEncoder.encode()` | 参考几何变化时同步设备并清理旧运行时程序；相同几何直接复用 | 修复连续横竖尺寸切换造成 L1_SMALL 元数据累计；保留磁盘 kernel/权重缓存和常驻模型权重 |
+| `/local/lnn/tt-metal/models/tt_dit/tests/flux3/test_flux3_reference_program_cache.py`（新建） | 3 项同步/清理顺序及同几何不清理测试 | 保证不在固定尺寸热态请求中逐次清理程序缓存 |
+| `/local/lnn/TL-inference-server/tt-media-server/Dockerfile` | 保留 `FLUX3_COMPONENT_RESIDENCY=resident`，补充 TTNN backend、128 KiB 设备预留和 runtime 挂载说明 | 说明最终运行参数；仅更新构建源文件，本轮没有重新构建镜像 |
+
+通用大面积 width strips 和 256 KiB 预留都曾试验失败，已撤回，不能当作交付配置。未改原始模型权重、公共 Conv2d/decoder 或 C++ runtime；本轮仍使用源码 bind mount，无需重建镜像。
+
+### 31.2 验证如何执行
+
+1. 重跑真实配置/API 测试 26/26、切片/预处理/RoPE 测试 16/16。
+2. 新增 `/local/lnn/fluxcache/flux3_reference_layer_diagnostic.py`：逐个卷积读取实际 TT 输入，用同层权重做 CPU 卷积对照，定位到首层 RGB；调整后 25 个卷积全部通过。
+3. 扩展 `/local/lnn/fluxcache/test_flux3_ttnn_vae_encoder.py`：最终两模型各执行 11 次、从 16 到 1024 方图及横竖图再切回 64，检查最终 token shape、有限性、PCC、relative RMSE，以及缓存重载。
+4. 重跑两模型同步/异步 18 个场景，确认旧单图兼容、交换顺序影响结果、坏输入/11 图 422。
+5. 新建 `/local/lnn/fluxcache/flux3_reference_load_test.py`：每模型执行 14 项数量/尺寸矩阵，随后单芯片预编译固定负载、32 冷覆盖、32 暖覆盖、200 请求同时提交。所有成功响应实际解码、校验尺寸/格式、保存图片及 SHA256。
+6. 新建 `/local/lnn/fluxcache/flux3_large_reference_control.py`：原服务空闲后暂停，临时服务用 8001；每阶段保存客户端及服务日志，统计实际参与 worker，finally 恢复 8000 原服务。
+7. 新建 `/local/lnn/fluxcache/flux3_reference_benchmark_report.py`：汇总请求成功率、吞吐、延迟、队列/主机内存采样、worker 启动重叠及图片非空检查；最终验收不能只看服务 ready。
+
+### 31.3 已验证结果与当前状态
+
+第一次扩大测试时，两模型 16 次 encoder 数值/尺寸切换及缓存重载通过；1024×1024 PCC 0.999818265、MAE 0.01389346、relative RMSE 0.01916481。该历史结果在 `/local/lnn/fluxcache/ttnn_reference_validation_20261105/20261105-072719/results.json`，两模型 HTTP 兼容性 18/18 通过；最新数值验收采用下面的 22 次结果。
+
+随后 `20261105-073240` 端到端轮次通过 Distilled 13/14 项，含十张 1024×1024 图，324.327 秒；混合长宽场景出现 L1_SMALL 元数据分配不足，未执行该轮 32/200 负载。追加 `flux3_components.py:_refresh_reference_program_cache()`：参考图几何变化时同步设备并调用 `MeshDevice.clear_program_cache()`，释放旧形状运行时程序对象，保留常驻模型权重和磁盘 JIT；相同参考几何复用原运行时缓存。新增 `test_flux3_reference_program_cache.py` 的 3 项切换/不切换测试。
+
+扩展到每模型 11 次、共 22 次数值验证后全部通过，含 1024×768、768×1024、512×1024 及切回 64；PCC≥0.999798894、relative RMSE≤0.02044829，缓存重载通过。最新结果是 `/local/lnn/fluxcache/ttnn_reference_validation_20261105/20261105-075049/results.json`。当时完整端到端矩阵和 32-worker 仍需重跑；其后的最终验收已在下文完成，不能以单层或 encoder 数值通过替代服务负载结果。
+
+修复后的大图和参考图压测执行根为 `/local/lnn/fluxcache/large_reference_load_20261105/20261105-075518/`。Distilled 已完成 14/14 大图矩阵、32/32 首次覆盖、32/32 暖态覆盖、200/200 参考图请求；200 请求总墙钟 119.631 秒、吞吐 1.6718 张/秒、平均完整响应 62.015 秒、P95 102.270 秒。全部 32 worker 实际参与，各处理 6～7 个请求，错误/重启均 0。十张 1024×1024 参考图单芯片通过，315.165 秒；混合长宽场景通过，60.938 秒。
+
+Base 也完成 14/14 大图矩阵、单芯片预编译、32/32 首次覆盖、32/32 暖态覆盖和 200/200 参考图请求。固定负载的 200 请求总墙钟 681.294 秒、吞吐 0.2936 张/秒、平均完整响应 354.129 秒、P95 585.335 秒；32 个 worker 全部实际参与，各处理 6 或 7 个请求，错误/重启均 0。十张 1024×1024 参考图单芯片通过，1922.377 秒；混合长宽场景通过，211.933 秒。
+
+最终 `flux3_reference_benchmark_report.py --require-complete` 验收为 `distilled=true`、`base=true`、`original_restored=true`、`all_passed=true`。原 `flux3-media-server-test` 已恢复为 Distilled、8000、32/32 ready、queue=0、canary healthy，默认 reference backend 仍为 CPU。完整响应时间包含排队及客户端图片校验，不是纯设备计算时间；详细矩阵、负载和问题记录见 `FLUX3_LARGE_REFERENCE_AND_32_WORKER_BENCHMARK.md`。
