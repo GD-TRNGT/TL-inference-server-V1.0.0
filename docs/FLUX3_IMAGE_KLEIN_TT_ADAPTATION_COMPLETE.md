@@ -1710,3 +1710,32 @@ json.dump({
 Base 也完成 14/14 大图矩阵、单芯片预编译、32/32 首次覆盖、32/32 暖态覆盖和 200/200 参考图请求。固定负载的 200 请求总墙钟 681.294 秒、吞吐 0.2936 张/秒、平均完整响应 354.129 秒、P95 585.335 秒；32 个 worker 全部实际参与，各处理 6 或 7 个请求，错误/重启均 0。十张 1024×1024 参考图单芯片通过，1922.377 秒；混合长宽场景通过，211.933 秒。
 
 最终 `flux3_reference_benchmark_report.py --require-complete` 验收为 `distilled=true`、`base=true`、`original_restored=true`、`all_passed=true`。原 `flux3-media-server-test` 已恢复为 Distilled、8000、32/32 ready、queue=0、canary healthy，默认 reference backend 仍为 CPU。完整响应时间包含排队及客户端图片校验，不是纯设备计算时间；详细矩阵、负载和问题记录见 `FLUX3_LARGE_REFERENCE_AND_32_WORKER_BENCHMARK.md`。
+
+
+## 32. 2026-11-07：joint RoPE 请求级复用
+
+### 32.1 问题和边界
+
+纯 T2I 路径此前在每个 denoise step 的每一个 single block 内重复调用 `_joint_rope(text_rope, image_rope)`。一次 forward 有 28 个 single block；一次请求则按 scheduler step 数重复。带参考图路径虽已在 single block 循环外构造 joint RoPE，但仍会在每一个 denoise step 重新构造。
+
+text/image/reference-image 的 mode block 在数学上相互独立，但当前共享同一完整 TT mesh，且各 block 内含分布式 layer norm、attention、tensor-parallel 通信和 FFN。没有经过 command queue / collective 并发安全验证时，不能以 Python 线程强行并发；本轮明确不改变三路 mode block 的稳定串行调度。
+
+### 32.2 实现
+
+TT-Metal 的 `transformer_flux3.py:Flux3Transformer.forward()` 增加可选 `joint_rope` 参数。未提供时保持旧接口行为：按当前 text、reference-image、image token 现场构造；提供时校验 joint sequence length 后复用。这样既兼容其他调用方，也阻止将错误长度的 RoPE 用于三流或双流 attention。
+
+`pipeline_flux3.py` 在进入 denoise loop 前，根据静态条件构造：
+
+- `prompt_joint_rope`：prompt text + image，或 prompt text + reference-image + image；
+- `negative_joint_rope`：仅在 Base CFG 负提示词存在时构造，对应 negative text 的独立序列长度。
+
+它们都是 TT device tensor，在整次请求的全部 denoise step、全部 28 个 single block 中复用；没有改变 token、RoPE 数值、scheduler、权重或 attention 计算。
+
+### 32.3 修改文件和验证
+
+| 仓库 | 文件 | 修改 |
+|---|---|---|
+| tt-metal | `models/tt_dit/models/transformers/transformer_flux3.py` | 接收和校验预构造 joint RoPE；T2I 与参考图路径都只消费同一份 RoPE |
+| tt-metal | `models/tt_dit/pipelines/flux3/pipeline_flux3.py` | 在 denoise loop 外建立 prompt/negative joint RoPE，并传给每一次 Transformer forward |
+
+已完成 Python `py_compile` 和 `git diff --check`。TT-Metal 提交：`50f8a61b4e Optimize FLUX.3 joint RoPE reuse`。正式镜像和 API 回归的结果在本节后续版本记录补充。

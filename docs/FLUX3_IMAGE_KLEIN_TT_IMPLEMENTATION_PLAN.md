@@ -255,3 +255,12 @@ docker image inspect tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4 \
 - 自动 OOM 降级、job 恢复/下载接口有明确实现和测试；
 - 有可复现的性能 profile 与长期稳定性报告；
 - 文档、镜像、代码提交 SHA 和测试产物能互相追溯。
+
+
+## 9. 2026-11-07：低风险 RoPE 调度优化（已实施）
+
+- [已完成] 将 joint RoPE 从纯 T2I 的 28 个 single block 内移出；同一 Transformer forward 只使用一份 joint RoPE。
+- [已完成] 再将 joint RoPE 移到 pipeline 的 denoise loop 外：prompt 条件、负提示词 CFG 条件、以及参考图条件各按其静态 token 长度创建一次，并在整次请求复用。
+- [已完成] 对调用方提供的 joint RoPE 检查其 sequence length，避免双流/三流 RoPE 被错误复用。
+- [暂缓] text/image/reference-image 三路 mode block 并发。原因是三路仍共享同一完整 Galaxy mesh 和分布式 collective；未验证独立 command queue、通信安全性和端到端收益前，不改变默认串行调度。
+- [后续] 通过 profiler 记录 mode block、single block、RoPE 构造和同步等待的耗时比例；若 mode block 占比有意义，再评估 command queue 或 mesh 切分设计。
