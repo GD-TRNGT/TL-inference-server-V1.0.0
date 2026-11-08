@@ -302,10 +302,36 @@ prompt
 
 ### 8.1 文件和入口
 
+`/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_components.py`
+
+该文件负责 **VAE decoder 组件本身的创建和权重装载**，不负责执行一次完整的图片生成请求。与本节相关的入口是：
+
 ```text
-/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/flux3_components.py
-/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py
+build_flux3_vae_decoder()
+  -> 按 FLUX.3 VAE 配置创建 Flux2VaeDecoder
+  -> 保存 device 和 parallel_config，供后续权重缓存加载使用
+
+load_flux3_vae_weights()
+  -> 读取 vae/diffusion_pytorch_model.safetensors
+  -> 调用 cache.load_model() 转换、缓存并加载 251 个 VAE decoder 源 tensor
 ```
+
+同一文件还包含 Qwen3-VL text encoder 的装配，以及参考图预处理、CPU/TTNN reference VAE encoder；这些职责与“最终 latent 解码成图片”不同。
+
+`/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py`
+
+该文件负责 **请求级 pipeline 编排**：它持有已加载的 decoder，在全部 denoise step 完成后，调用 decoder 将最终 image token/latent 转为可见图片。与本节相关的职责是：
+
+```text
+接收 denoise loop 的最终 image_tt
+  -> 转为 host token / latent 表示
+  -> 调用 Flux2VaeDecoder.preprocess_and_unpatchify()
+  -> 调用 Flux2VaeDecoder.forward()
+  -> 得到 RGB tensor
+  -> 转为 PIL Image / PNG，交给 server 返回
+```
+
+因此，`flux3_components.py` 解决“**decoder 是什么、权重如何上设备**”，而 `pipeline_flux3.py` 解决“**何时调用 decoder、如何把 decoder 输出返回给请求方**”。
 
 关键调用：
 
