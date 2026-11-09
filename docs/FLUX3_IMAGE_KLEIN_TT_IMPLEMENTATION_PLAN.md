@@ -240,7 +240,7 @@ docker image inspect tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4 \
 
 - 模型通过 `/local/models:/local/models:ro` 挂载；
 - 缓存通过 `/local/lnn/fluxcache:/local/fluxcache` 挂载；
-- `FLUX3_MODEL_ROOT` 在启动时明确选择 Base 或 Distilled；
+- 服务默认使用 Distilled；在 `/local/models` 挂载存在时，runner 自动将默认名称解析为 `/local/models/flux-3-image-klein`；`FLUX3_MODEL_ROOT` 或 `MODEL_WEIGHTS_DIR` 可在启动时显式选择 Base 或 Distilled；
 - 默认使用 TTNN reference encoder；资源受限或故障排查时可显式设定 `FLUX3_REFERENCE_ENCODER_BACKEND=cpu`；
 - 性能测试如需关闭节流，显式设定 `TT_MM_THROTTLE_PERF=0` 与 `TT_METAL_TDP_LIMIT_WATTS=160`。
 

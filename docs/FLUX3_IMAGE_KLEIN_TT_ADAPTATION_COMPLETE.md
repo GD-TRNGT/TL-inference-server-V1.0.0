@@ -91,7 +91,8 @@ DOCKER_BUILDKIT=1 docker build --progress=plain \
 机器：10.12.11.2
 硬件：Blackhole Galaxy，32 个芯片
 模型（Base）：/local/models/flux-3-image-klein-base
-模型（Distilled）：/local/models/flux-3-image-klein
+模型（Distilled，服务默认）：/local/models/flux-3-image-klein
+默认选择逻辑：若未设置 `FLUX3_MODEL_ROOT` 且 `MODEL_WEIGHTS_DIR` 未提供具体模型目录，runner 会把默认模型名解析为已挂载的 `/local/models/flux-3-image-klein`；显式配置始终优先。
 持久化缓存：/local/lnn/fluxcache
 服务容器：flux3-media-server-eca825c5-6926f00a4-base-validation（Base；Distilled 验证容器已停止保留）
 镜像：tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4

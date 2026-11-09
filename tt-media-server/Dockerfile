@@ -24,11 +24,11 @@ ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
 # common model root read-only so either supported checkpoint can be selected:
 #   -v /local/models:/local/models:ro
 #   Base:      FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein-base
-#   Distilled: FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein
-# FLUX.3 runtime selection is deliberately explicit; this Dockerfile does not
-# bake model weights or a default checkpoint into the image:
-#   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein-base
-#   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein
+#   Default Distilled: FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein
+# FLUX.3 defaults to Distilled; this Dockerfile does not
+# bake model weights into the image. Override the default checkpoint with:
+#   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein-base  # Base
+#   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein       # Distilled
 # 32-worker performance measurements on 2026-11-05 additionally used:
 #   -e TT_MM_THROTTLE_PERF=0
 #   -e TT_METAL_TDP_LIMIT_WATTS=160

@@ -17,7 +17,9 @@ class SupportedModels(Enum):
     FLUX_1_DEV = "black-forest-labs/FLUX.1-dev"
     FLUX_1_SCHNELL = "black-forest-labs/FLUX.1-schnell"
     FLUX_1_KONTEXT_DEV = "black-forest-labs/FLUX.1-Kontext-dev"
-    FLUX_3_IMAGE_KLEIN = "flux-3-image-klein-base"
+    # Distilled is the default FLUX.3 checkpoint. Base remains selectable by
+    # explicitly setting FLUX3_MODEL_ROOT or MODEL_WEIGHTS_DIR.
+    FLUX_3_IMAGE_KLEIN = "flux-3-image-klein"
     MOTIF_IMAGE_6B_PREVIEW = "Motif-Technologies/Motif-Image-6B-Preview"
     QWEN_IMAGE = "Qwen/Qwen-Image"
     QWEN_IMAGE_2512 = "Qwen/Qwen-Image-2512"

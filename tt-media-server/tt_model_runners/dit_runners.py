@@ -503,7 +503,21 @@ class TTMotifImage6BPreviewRunner(TTDiTRunner):
         return {"l1_small_size": 32768, "trace_region_size": 31000000}
 
 
-# Runner for Qwen-Image and Qwen-Image-2512. Model weights from settings.model_weights_path determine the exact model variant.
+# Runner for FLUX.3 Image Klein.  Distilled is the mounted default; explicit
+# FLUX3_MODEL_ROOT or MODEL_WEIGHTS_DIR still selects either checkpoint.
+def _resolve_flux3_weights_path(settings_path: str | None) -> str | None:
+    """Resolve the mounted Distilled default without overriding explicit input."""
+    explicit_root = os.environ.get("FLUX3_MODEL_ROOT")
+    if explicit_root:
+        return explicit_root
+
+    distilled_name = SupportedModels.FLUX_3_IMAGE_KLEIN.value
+    mounted_distilled = Path("/local/models") / distilled_name
+    if settings_path == distilled_name and mounted_distilled.is_dir():
+        return str(mounted_distilled)
+    return settings_path
+
+
 class TTFlux3ImageKleinRunner(TTDiTRunner):
     """FLUX.3 Image Klein text-to-image runner backed by the TTNN pipeline."""
 
@@ -530,9 +544,8 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         self._ccl_manager = CCLManager(self.ttnn_device, topology=ttnn.Topology.Linear)
         self._dit_parallel = DiTParallelConfig.from_tuples(cfg=(1, 0), sp=(1, 0), tp=(1, 0))
         self._encoder_parallel = EncoderParallelConfig.from_tuple((1, 0))
-        weights_path = os.environ.get(
-            "FLUX3_MODEL_ROOT",
-            self.settings.model_weights_path,
+        weights_path = _resolve_flux3_weights_path(
+            self.settings.model_weights_path
         )
         pipeline = Flux3T2IPipeline(weights_path)
         if self._component_residency == "resident":
