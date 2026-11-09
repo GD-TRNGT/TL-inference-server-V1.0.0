@@ -394,9 +394,9 @@ Flux3T2IPipeline.run()
 ### 10.2 外部 embedding 路径
 
 ```text
-Flux3T2IRequest -> initialize_latents -> prepare_schedule -> patchify
-  -> Transformer.forward -> unpatchify -> Euler update -> repeat steps
-  -> VAE decode -> PNG
+Flux3T2IRequest -> initialize_image_tokens (official BF16-rounded packed noise)
+  -> prepare_schedule -> Transformer.forward -> Euler update on TT -> repeat steps
+  -> VAE decoder preprocess_and_unpatchify -> VAE decode -> PNG
 ```
 
 该路径绕过 tokenizer，用外部 `prompt_embeds` 验证 Transformer、多步采样和 VAE 组合。
