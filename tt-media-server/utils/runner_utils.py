@@ -38,6 +38,20 @@ def setup_runner_environment(
         os.environ["TT_VISIBLE_DEVICES"] = str(device_id)
         _logger.info(f"setup_runner_environment: TT_VISIBLE_DEVICES={device_id}")
 
+    if (
+        device_id
+        and device_id != "-1"
+        and settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+    ):
+        cache_root = os.environ.get("FLUX3_TT_METAL_CACHE_ROOT")
+        if not cache_root:
+            cache_root = os.path.join(
+                os.environ.get("CACHE_ROOT", os.path.expanduser("~/.cache")),
+                "flux3-tt-metal-workers",
+            )
+        worker_name = str(device_id).replace(",", "-").replace("(", "").replace(")", "")
+        os.makedirs(os.path.join(cache_root, worker_name), exist_ok=True)
+        os.environ["TT_METAL_CACHE"] = os.path.join(cache_root, worker_name)
     if settings.enable_telemetry:
         get_telemetry_client()
 
