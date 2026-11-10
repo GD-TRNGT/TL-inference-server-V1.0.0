@@ -327,9 +327,9 @@ class Settings(BaseSettings):
                         "Cluster.ReportSystemHealth succeeds."
                     )
 
-            elif mesh == (4, 1):
+            elif mesh == (1, 4):
                 logger.info(
-                    "Running Galaxy TP4 device discovery (test_system_health, may take 10-15s)..."
+                    "Running Galaxy FLUX.3 TP4 device discovery (test_system_health, may take 10-15s)..."
                 )
                 devices = dm.get_device_groups_of_four()
                 logger.info(
@@ -337,7 +337,7 @@ class Settings(BaseSettings):
                 )
                 if not devices:
                     raise RuntimeError(
-                        "Galaxy TP4 (4,1): device discovery returned no groups. "
+                        "Galaxy FLUX.3 TP4 (1,4): device discovery returned no groups. "
                         "Ensure test_system_health binary is available and "
                         "Cluster.ReportSystemHealth succeeds."
                     )
@@ -351,7 +351,7 @@ class Settings(BaseSettings):
                     )
 
         except Exception as e:
-            if mesh in ((2, 1), (4, 1), (2, 4)):
+            if mesh in ((2, 1), (1, 4), (2, 4)):
 
                 raise RuntimeError(
                     f"Device discovery failed for mesh {mesh}: {e}. "
@@ -404,7 +404,10 @@ class Settings(BaseSettings):
                 tp_size = int(flux3_tp_size)
             except ValueError as exc:
                 raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, or 4") from exc
-            flux3_meshes = {1: (1, 1), 2: (2, 1), 4: (4, 1)}
+            # Each physical 2x2 N300 group is reshaped logically as 1x4 for
+            # FLUX.3 pure TP4.  This avoids SP2 splitting the 160-token text
+            # stream into 80-token non-tile-aligned chunks.
+            flux3_meshes = {1: (1, 1), 2: (2, 1), 4: (1, 4)}
             if tp_size not in flux3_meshes:
                 raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, or 4")
             self.device_mesh_shape = flux3_meshes[tp_size]

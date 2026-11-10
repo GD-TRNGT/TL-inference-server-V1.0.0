@@ -115,7 +115,7 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
     mesh_descriptors = {
         (1, 1): "n150_mesh_graph_descriptor.textproto",
         (2, 1): "n300_mesh_graph_descriptor.textproto",
-        (4, 1): "n300_2x2_mesh_graph_descriptor.textproto",
+        (1, 4): "n300_2x2_mesh_graph_descriptor.textproto",
         (2, 4): "t3k_mesh_graph_descriptor.textproto",
     }
 

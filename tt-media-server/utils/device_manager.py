@@ -28,7 +28,7 @@ SYSTEM_HEALTH_RELATIVE_PATH = "build/test/tt_metal/tt_fabric/test_system_health"
 SYSTEM_HEALTH_GTEST_FILTER = "Cluster.ReportSystemHealth"
 N_PER_TRAY = 8
 N_LOC_PAIRS = (("1", "2"), ("3", "4"), ("5", "6"), ("7", "8"))
-N_LOC_QUADS = (("1", "2", "3", "4"), ("5", "6", "7", "8"))
+N_LOC_QUADS = (("1", "2", "5", "6"), ("3", "4", "7", "8"))
 
 CHIP_PATTERN = re.compile(
     r"Chip:\s+(\d+)\s+PCIe:\s+(\d+)\s+Unique ID:\s+(\w+)\s+Tray:\s+(\d+)\s+N(\d+)"
@@ -367,7 +367,7 @@ class DeviceManager:
     def _build_groups_of_four_from_chips(
         chips: list[ChipInfo],
     ) -> list[tuple[int, int, int, int]]:
-        """Build N1-N4 and N5-N8 groups, never mixing chips from two trays."""
+        """Build physical 2x2 N300 groups within each Galaxy tray."""
         tray_map: dict[str, dict[str, str]] = {}
         for chip in chips:
             tray_map.setdefault(chip.tray, {})[chip.n_loc] = chip.chip_id

@@ -521,15 +521,32 @@ def _resolve_flux3_weights_path(settings_path: str | None) -> str | None:
 def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
     """Return the supported FLUX.3 TP degree for one worker mesh."""
     normalized = tuple(mesh_shape)
-    degrees = {(1, 1): 1, (2, 1): 2, (4, 1): 4}
+    degrees = {(1, 1): 1, (2, 1): 2, (1, 4): 4}
     try:
         return degrees[normalized]
     except KeyError as exc:
         raise ValueError(
-            "FLUX.3 supports only mesh shapes (1,1), (2,1), or (4,1); "
+            "FLUX.3 supports only mesh shapes (1,1), (2,1), or (1,4); "
             f"got {normalized}"
         ) from exc
 
+
+
+def _flux3_parallel_factors(
+    mesh_shape: tuple[int, int],
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Return (tensor-parallel, sequence-parallel) factors for a FLUX.3 mesh."""
+    normalized = tuple(mesh_shape)
+    factors = {
+        (1, 1): ((1, 0), (1, 0)),
+        (2, 1): ((2, 0), (1, 0)),
+        # A physical 2x2 N300 group is presented as a logical 1x4 TP mesh.
+        (1, 4): ((4, 1), (1, 0)),
+    }
+    try:
+        return factors[normalized]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported FLUX.3 mesh shape: {normalized}") from exc
 
 class TTFlux3ImageKleinRunner(TTDiTRunner):
     """FLUX.3 Image Klein text-to-image runner backed by the TTNN pipeline."""
@@ -556,16 +573,18 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
 
     def create_pipeline(self):
         self._ccl_manager = CCLManager(self.ttnn_device, topology=ttnn.Topology.Linear)
+        tp_factor, sp_factor = _flux3_parallel_factors(
+            self.settings.device_mesh_shape
+        )
         self._dit_parallel = DiTParallelConfig.from_tuples(
             cfg=(1, 0),
-            sp=(1, 0),
-            tp=(self._tp_degree, 0),
+            sp=sp_factor,
+            tp=tp_factor,
         )
-        self._encoder_parallel = EncoderParallelConfig.from_tuple(
-            (self._tp_degree, 0)
-        )
+        self._encoder_parallel = EncoderParallelConfig.from_tuple(tp_factor)
         self.logger.info(
-            f"Device {self.device_id}: FLUX.3 TP{self._tp_degree} "
+            f"Device {self.device_id}: FLUX.3 composite parallelism "
+            f"TP{tp_factor[0]}xSP{sp_factor[0]} "
             f"on mesh {tuple(self.ttnn_device.shape)}"
         )
         weights_path = _resolve_flux3_weights_path(
