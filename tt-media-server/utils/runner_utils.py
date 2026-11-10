@@ -46,6 +46,7 @@ def setup_runner_environment(
     _RUNNERS_REQUIRING_MESH_DESCRIPTOR = {
         ModelRunners.TT_WHISPER.value,
         ModelRunners.TT_SPEECHT5_TTS.value,
+        ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value,
         # Training runners init a tt-metal device directly (via torch-xla or
         # tt-crank). On a single Blackhole chip of a P300 board, tt-metal
         # otherwise selects the CUSTOM cluster type and asserts that a fabric
@@ -100,6 +101,7 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
     mesh_descriptors = {
         (1, 1): "n150_mesh_graph_descriptor.textproto",
         (2, 1): "n300_mesh_graph_descriptor.textproto",
+        (4, 1): "n300_2x2_mesh_graph_descriptor.textproto",
         (2, 4): "t3k_mesh_graph_descriptor.textproto",
     }
 

@@ -518,6 +518,19 @@ def _resolve_flux3_weights_path(settings_path: str | None) -> str | None:
     return settings_path
 
 
+def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
+    """Return the supported FLUX.3 TP degree for one worker mesh."""
+    normalized = tuple(mesh_shape)
+    degrees = {(1, 1): 1, (2, 1): 2, (4, 1): 4}
+    try:
+        return degrees[normalized]
+    except KeyError as exc:
+        raise ValueError(
+            "FLUX.3 supports only mesh shapes (1,1), (2,1), or (4,1); "
+            f"got {normalized}"
+        ) from exc
+
+
 class TTFlux3ImageKleinRunner(TTDiTRunner):
     """FLUX.3 Image Klein text-to-image runner backed by the TTNN pipeline."""
 
@@ -539,11 +552,22 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 "FLUX3_COMPONENT_RESIDENCY must be 'resident' or 'per_request', "
                 f"got {self._component_residency!r}"
             )
+        self._tp_degree = _flux3_tp_degree(self.settings.device_mesh_shape)
 
     def create_pipeline(self):
         self._ccl_manager = CCLManager(self.ttnn_device, topology=ttnn.Topology.Linear)
-        self._dit_parallel = DiTParallelConfig.from_tuples(cfg=(1, 0), sp=(1, 0), tp=(1, 0))
-        self._encoder_parallel = EncoderParallelConfig.from_tuple((1, 0))
+        self._dit_parallel = DiTParallelConfig.from_tuples(
+            cfg=(1, 0),
+            sp=(1, 0),
+            tp=(self._tp_degree, 0),
+        )
+        self._encoder_parallel = EncoderParallelConfig.from_tuple(
+            (self._tp_degree, 0)
+        )
+        self.logger.info(
+            f"Device {self.device_id}: FLUX.3 TP{self._tp_degree} "
+            f"on mesh {tuple(self.ttnn_device.shape)}"
+        )
         weights_path = _resolve_flux3_weights_path(
             self.settings.model_weights_path
         )
@@ -653,7 +677,14 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         l1_small_size = int(os.environ.get("FLUX3_L1_SMALL_SIZE", "131072"))
         if not 65536 <= l1_small_size <= 131072 or l1_small_size % 32:
             raise ValueError("FLUX3_L1_SMALL_SIZE must be 64-128 KiB and a multiple of 32 bytes")
-        return {"l1_small_size": l1_small_size, "fabric_config": ttnn.FabricConfig.DISABLED}
+        return {
+            "l1_small_size": l1_small_size,
+            "fabric_config": (
+                ttnn.FabricConfig.FABRIC_1D
+                if _flux3_tp_degree(self.settings.device_mesh_shape) > 1
+                else ttnn.FabricConfig.DISABLED
+            ),
+        }
 
 
 class TTQwenImageRunner(TTDiTRunner):

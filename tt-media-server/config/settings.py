@@ -327,6 +327,21 @@ class Settings(BaseSettings):
                         "Cluster.ReportSystemHealth succeeds."
                     )
 
+            elif mesh == (4, 1):
+                logger.info(
+                    "Running Galaxy TP4 device discovery (test_system_health, may take 10-15s)..."
+                )
+                devices = dm.get_device_groups_of_four()
+                logger.info(
+                    f"Galaxy TP4 discovery returned {len(devices) if devices else 0} groups"
+                )
+                if not devices:
+                    raise RuntimeError(
+                        "Galaxy TP4 (4,1): device discovery returned no groups. "
+                        "Ensure test_system_health binary is available and "
+                        "Cluster.ReportSystemHealth succeeds."
+                    )
+
             elif mesh == (2, 4):
                 devices = dm.get_device_groups_of_eight()
                 if not devices:
@@ -336,7 +351,8 @@ class Settings(BaseSettings):
                     )
 
         except Exception as e:
-            if mesh in ((2, 1), (2, 4)):
+            if mesh in ((2, 1), (4, 1), (2, 4)):
+
                 raise RuntimeError(
                     f"Device discovery failed for mesh {mesh}: {e}. "
                     "Cannot start without valid device pairs."
@@ -377,6 +393,28 @@ class Settings(BaseSettings):
             self.default_throttle_level = None
 
     def _set_mesh_overrides(self):
+        flux3_tp_size = os.getenv("FLUX3_TP_SIZE")
+        if flux3_tp_size is not None:
+            if self.model_runner != ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value:
+                raise ValueError(
+                    "FLUX3_TP_SIZE is only supported by "
+                    "MODEL_RUNNER=tt-flux.3-image-klein"
+                )
+            try:
+                tp_size = int(flux3_tp_size)
+            except ValueError as exc:
+                raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, or 4") from exc
+            flux3_meshes = {1: (1, 1), 2: (2, 1), 4: (4, 1)}
+            if tp_size not in flux3_meshes:
+                raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, or 4")
+            self.device_mesh_shape = flux3_meshes[tp_size]
+            self.is_galaxy = tp_size > 1
+            logger.info(
+                f"Applied FLUX.3 TP override: FLUX3_TP_SIZE={tp_size}, "
+                f"mesh={self.device_mesh_shape}, is_galaxy={self.is_galaxy}"
+            )
+            return
+
         env_mesh_map = {
             "SD_3_5_FAST": (4, 8),
             "SD_3_5_BASE": (2, 4),

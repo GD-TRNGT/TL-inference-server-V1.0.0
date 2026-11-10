@@ -3,7 +3,8 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent USA, Inc.
 
 """
-Device discovery: tt-smi for (1,1) and (2,4), test_system_health for Galaxy (2,1).
+Device discovery: tt-smi for (1,1) and (2,4), test_system_health for
+Galaxy-local TP groups.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ SYSTEM_HEALTH_RELATIVE_PATH = "build/test/tt_metal/tt_fabric/test_system_health"
 SYSTEM_HEALTH_GTEST_FILTER = "Cluster.ReportSystemHealth"
 N_PER_TRAY = 8
 N_LOC_PAIRS = (("1", "2"), ("3", "4"), ("5", "6"), ("7", "8"))
+N_LOC_QUADS = (("1", "2", "3", "4"), ("5", "6", "7", "8"))
 
 CHIP_PATTERN = re.compile(
     r"Chip:\s+(\d+)\s+PCIe:\s+(\d+)\s+Unique ID:\s+(\w+)\s+Tray:\s+(\d+)\s+N(\d+)"
@@ -51,7 +53,7 @@ class DeviceManager:
     Unified device discovery.
 
     - tt-smi: get_single_devices(), get_device_groups_of_eight()
-    - test_system_health: get_device_pairs()
+    - test_system_health: get_device_pairs(), get_device_groups_of_four()
     """
 
     def __init__(self, system_health_binary: Optional[str] = None):
@@ -76,8 +78,39 @@ class DeviceManager:
             logger.info("Device pairs: %s", pairs)
             return pairs
         except DeviceDiscoveryError as e:
-            logger.error("Galaxy device discovery failed: %s", e)
-            return []
+            logger.warning(
+                "Galaxy TP2 health discovery failed: %s; falling back to tt-smi", e
+            )
+            try:
+                return self._get_local_groups_from_tt_smi(2)
+            except DeviceDiscoveryError as fallback_error:
+                logger.error(
+                    "Galaxy TP2 device discovery failed: health=%s; tt-smi=%s",
+                    e,
+                    fallback_error,
+                )
+                return []
+
+    def get_device_groups_of_four(self) -> list[tuple[int, int, int, int]]:
+        """(4,1) Galaxy TP4 groups: N1-N4 and N5-N8 within every tray."""
+        try:
+            chips = self._run_system_health()
+            groups = self._build_groups_of_four_from_chips(chips)
+            logger.info("Device groups of four: %s", groups)
+            return groups
+        except DeviceDiscoveryError as e:
+            logger.warning(
+                "Galaxy TP4 health discovery failed: %s; falling back to tt-smi", e
+            )
+            try:
+                return self._get_local_groups_from_tt_smi(4)
+            except DeviceDiscoveryError as fallback_error:
+                logger.error(
+                    "Galaxy TP4 device discovery failed: health=%s; tt-smi=%s",
+                    e,
+                    fallback_error,
+                )
+                return []
 
     def get_device_groups_of_eight(self) -> list[tuple[int, ...]]:
         """(2,4) mesh - groups of 8 via tt-smi. Returns [] on failure."""
@@ -92,6 +125,21 @@ class DeviceManager:
             logger.error("%s", e)
             return []
         logger.info("Device groups of 8: %s", groups)
+        return groups
+
+    def _get_local_groups_from_tt_smi(self, group_size: int) -> list[tuple[int, ...]]:
+        """Build topology-local fixed-size groups from ordered Galaxy tray IDs."""
+        if group_size not in (2, 4):
+            raise ValueError(f"Unsupported Galaxy local group size: {group_size}")
+        tray_mapping = self._run_tt_smi()
+        groups: list[tuple[int, ...]] = []
+        for tray in sorted(tray_mapping):
+            ids = sorted(tray_mapping[tray])
+            if len(ids) < group_size or len(ids) % group_size:
+                raise DeviceDiscoveryError(
+                    f"Tray {tray}: cannot split {len(ids)} devices into groups of {group_size}"
+                )
+            groups.extend(tuple(ids[index : index + group_size]) for index in range(0, len(ids), group_size))
         return groups
 
     def _run_tt_smi(self) -> dict[int, list[int]]:
@@ -314,3 +362,21 @@ class DeviceManager:
                 if dev1 and dev2:
                     pairs.append((int(dev1), int(dev2)))
         return pairs
+
+    @staticmethod
+    def _build_groups_of_four_from_chips(
+        chips: list[ChipInfo],
+    ) -> list[tuple[int, int, int, int]]:
+        """Build N1-N4 and N5-N8 groups, never mixing chips from two trays."""
+        tray_map: dict[str, dict[str, str]] = {}
+        for chip in chips:
+            tray_map.setdefault(chip.tray, {})[chip.n_loc] = chip.chip_id
+
+        groups: list[tuple[int, int, int, int]] = []
+        for tray in sorted(tray_map, key=int):
+            n_devices = tray_map[tray]
+            for locations in N_LOC_QUADS:
+                members = [n_devices.get(location) for location in locations]
+                if all(member is not None for member in members):
+                    groups.append(tuple(int(member) for member in members))
+        return groups
