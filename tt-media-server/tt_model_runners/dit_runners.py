@@ -521,12 +521,12 @@ def _resolve_flux3_weights_path(settings_path: str | None) -> str | None:
 def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
     """Return the supported FLUX.3 TP degree for one worker mesh."""
     normalized = tuple(mesh_shape)
-    degrees = {(1, 1): 1, (2, 1): 2, (1, 4): 4}
+    degrees = {(1, 1): 1, (2, 1): 2, (1, 4): 4, (4, 1): 4}
     try:
         return degrees[normalized]
     except KeyError as exc:
         raise ValueError(
-            "FLUX.3 supports only mesh shapes (1,1), (2,1), or (1,4); "
+            "FLUX.3 supports only mesh shapes (1,1), (2,1), (1,4), or (4,1); "
             f"got {normalized}"
         ) from exc
 
@@ -540,8 +540,9 @@ def _flux3_parallel_factors(
     factors = {
         (1, 1): ((1, 0), (1, 0)),
         (2, 1): ((2, 0), (1, 0)),
-        # A physical 2x2 N300 group is presented as a logical 1x4 TP mesh.
+        # A physical 2x2 N300 group can be presented as either TP-ring axis.
         (1, 4): ((4, 1), (1, 0)),
+        (4, 1): ((4, 0), (1, 0)),
     }
     try:
         return factors[normalized]
