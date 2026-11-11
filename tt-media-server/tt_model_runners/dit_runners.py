@@ -612,10 +612,18 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             self.logger.info(
                 f"Device {self.device_id}: loading resident FLUX.3 VAE decoder"
             )
+            # The DiT uses TP4 on the logical mesh axis 1. Use that same
+            # axis for VAE channel parallelism instead of four replicated VAE
+            # executions. A (1, 1) mesh keeps the existing single-chip config.
+            vae_parallel = (
+                Flux2VaeParallelConfig.from_axes(self.ttnn_device, tp_axis=1)
+                if int(self.ttnn_device.shape[1]) > 1
+                else Flux2VaeParallelConfig()
+            )
             self._vae_decoder = pipeline.create_vae_decoder(
                 device=self.ttnn_device,
                 ccl_manager=self._ccl_manager,
-                parallel_config=Flux2VaeParallelConfig(),
+                parallel_config=vae_parallel,
             )
             pipeline.load_vae_weights(self._vae_decoder)
             self.logger.info(
@@ -674,19 +682,29 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             guidance=guidance,
             reference_images=reference_images,
         )
-        return [
-            self.pipeline.run(
-                flux_request,
-                device=self.ttnn_device,
-                ccl_manager=self._ccl_manager,
-                parallel_config=self._dit_parallel,
-                encoder_parallel_config=self._encoder_parallel,
-                prompt_encoder=self._prompt_encoder,
-                transformer=self._transformer,
-                vae_decoder=self._vae_decoder,
-                reference_encoder=self._reference_encoder,
-            )["image"]
-        ]
+        result = self.pipeline.run(
+            flux_request,
+            device=self.ttnn_device,
+            ccl_manager=self._ccl_manager,
+            parallel_config=self._dit_parallel,
+            encoder_parallel_config=self._encoder_parallel,
+            prompt_encoder=self._prompt_encoder,
+            transformer=self._transformer,
+            vae_decoder=self._vae_decoder,
+            reference_encoder=self._reference_encoder,
+        )
+        if os.environ.get("FLUX3_PROFILE_STAGES", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            self.logger.info(
+                f"Device {self.device_id}: FLUX.3 stage profile "
+                f"steps={result.get('steps')} timings_s={result.get('profile_stages_s')} "
+                f"step_times_s={result.get('step_times_s')}"
+            )
+        return [result["image"]]
 
     def get_pipeline_device_params(self):
         # Multiple reference/output geometries retain halo/program metadata in
