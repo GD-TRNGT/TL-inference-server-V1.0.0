@@ -572,7 +572,16 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         self._tp_degree = _flux3_tp_degree(self.settings.device_mesh_shape)
 
     def create_pipeline(self):
-        self._ccl_manager = CCLManager(self.ttnn_device, topology=ttnn.Topology.Linear)
+        topology = (
+            ttnn.Topology.Ring
+            if self._tp_degree > 1
+            else ttnn.Topology.Linear
+        )
+        self._ccl_manager = CCLManager(
+            self.ttnn_device,
+            num_links=1,
+            topology=topology,
+        )
         tp_factor, sp_factor = _flux3_parallel_factors(
             self.settings.device_mesh_shape
         )
@@ -717,7 +726,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         return {
             "l1_small_size": l1_small_size,
             "fabric_config": (
-                ttnn.FabricConfig.FABRIC_1D
+                ttnn.FabricConfig.FABRIC_1D_RING
                 if _flux3_tp_degree(self.settings.device_mesh_shape) > 1
                 else ttnn.FabricConfig.DISABLED
             ),
