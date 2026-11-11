@@ -575,7 +575,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
     def create_pipeline(self):
         topology = (
             ttnn.Topology.Ring
-            if self._tp_degree > 1
+            if self._tp_degree > 2
             else ttnn.Topology.Linear
         )
         self._ccl_manager = CCLManager(
@@ -622,12 +622,13 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             self.logger.info(
                 f"Device {self.device_id}: loading resident FLUX.3 VAE decoder"
             )
-            # The DiT uses TP4 on the logical mesh axis 1. Use that same
-            # axis for VAE channel parallelism instead of four replicated VAE
-            # executions. A (1, 1) mesh keeps the existing single-chip config.
+            # Shard VAE channel-heavy convolutions along the same logical TP axis as
+            # the DiT. A (1, 1) mesh keeps the existing single-chip config.
             vae_parallel = (
-                Flux2VaeParallelConfig.from_axes(self.ttnn_device, tp_axis=1)
-                if int(self.ttnn_device.shape[1]) > 1
+                Flux2VaeParallelConfig.from_axes(
+                    self.ttnn_device, tp_axis=self._dit_parallel.tensor_parallel.mesh_axis
+                )
+                if self._dit_parallel.tensor_parallel.factor > 1
                 else Flux2VaeParallelConfig()
             )
             self._vae_decoder = pipeline.create_vae_decoder(
