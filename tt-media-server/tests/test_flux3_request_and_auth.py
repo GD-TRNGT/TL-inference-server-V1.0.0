@@ -19,7 +19,7 @@ def flux3_runner(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("width,height", [(256, 256), (256, 2048), (4096, 4096)])
+@pytest.mark.parametrize("width,height", [(16, 16), (16, 4096), (4096, 4096)])
 def test_flux3_accepts_officially_supported_geometry(flux3_runner, width, height):
     request = ImageGenerateRequest(prompt="a black bird", width=width, height=height)
 
@@ -29,9 +29,8 @@ def test_flux3_accepts_officially_supported_geometry(flux3_runner, width, height
 @pytest.mark.parametrize(
     "width,height,reason",
     [
-        (255, 1024, "greater than or equal to 256"),
-        (257, 1024, "multiples of 16"),
-        (256, 4096, "aspect ratio"),
+        (15, 1024, "greater than or equal to 16"),
+        (17, 1024, "multiples of 16"),
         (4096, 4112, "must be <= 4096"),
     ],
 )
@@ -58,3 +57,13 @@ def test_legacy_api_key_remains_supported(monkeypatch):
     monkeypatch.setenv("API_KEY", "legacy-token")
 
     assert api_key_checker.configured_api_key() == "legacy-token"
+
+
+def test_missing_api_key_is_never_replaced_by_a_published_default(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("API_KEY", raising=False)
+
+    assert api_key_checker.configured_api_key() is None
+    with pytest.raises(Exception) as error:
+        api_key_checker.get_api_key("Bearer your-secret-key")
+    assert getattr(error.value, "status_code", None) == 503

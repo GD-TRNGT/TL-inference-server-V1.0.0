@@ -19,10 +19,11 @@ from pydantic import Field, PrivateAttr, field_validator, model_validator
 _FLUX_RUNNERS = {"tt-flux.1-dev", "tt-flux.1-schnell", "tt-flux.1-kontext-dev"}
 _FLUX3_RUNNER = "tt-flux.3-image-klein"
 _DEFAULT_MAX_RESOLUTION = 1536
-_FLUX3_MIN_RESOLUTION = 256
+# The official FLUX.3 reference accepts any output whose two sides are a
+# multiple of the VAE downsampling ratio. The smallest non-zero valid image is
+# therefore 16x16. Its model card advertises an upper bound of 4K per side.
+_FLUX3_MIN_RESOLUTION = 16
 _FLUX3_MAX_RESOLUTION = 4096
-_FLUX3_MAX_PIXELS = 4096 * 4096
-_FLUX3_MAX_ASPECT_RATIO = 8
 _FLUX3_SHAPE_MULTIPLE = 16
 _FLUX_MIN_INFERENCE_STEPS = 4
 _DEFAULT_MIN_INFERENCE_STEPS = 12
@@ -83,8 +84,10 @@ class BaseImageRequest(BaseRequest):
             raise ValueError("width and height must be provided together")
         model_runner = get_settings().model_runner
         # Keep the established 1536 limit for other image runners. FLUX.3
-        # follows the published request contract: 256--4096 pixels per side,
-        # 16-pixel VAE/DiT alignment, <=16 Mi-pixels, and <=8:1 aspect ratio.
+        # follows the official reference contract: up to 4K per side, with
+        # each side aligned to the VAE/DiT 16-pixel downsampling ratio. The
+        # reference implementation has no separate output-pixel or aspect-ratio
+        # cap, so do not impose one here.
         max_resolution = (
             _FLUX3_MAX_RESOLUTION if model_runner == _FLUX3_RUNNER else _DEFAULT_MAX_RESOLUTION
         )
@@ -99,17 +102,6 @@ class BaseImageRequest(BaseRequest):
                 raise ValueError(
                     "FLUX.3 width and height must be multiples of "
                     f"{_FLUX3_SHAPE_MULTIPLE}; got {self.width}x{self.height}"
-                )
-            if self.width * self.height > _FLUX3_MAX_PIXELS:
-                raise ValueError(
-                    "FLUX.3 width * height must be <= "
-                    f"{_FLUX3_MAX_PIXELS:,}; got {self.width}x{self.height}"
-                )
-            aspect_ratio = max(self.width, self.height) / min(self.width, self.height)
-            if aspect_ratio > _FLUX3_MAX_ASPECT_RATIO:
-                raise ValueError(
-                    "FLUX.3 width and height must have an aspect ratio no wider than "
-                    f"{_FLUX3_MAX_ASPECT_RATIO}:1; got {self.width}x{self.height}"
                 )
         return self
 
