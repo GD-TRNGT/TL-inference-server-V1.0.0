@@ -41,7 +41,7 @@ def test_flux3_rejects_geometry_outside_official_contract(
         ImageGenerateRequest(prompt="a black bird", width=width, height=height)
 
 
-def test_openai_api_key_takes_priority_over_legacy_api_key(monkeypatch):
+def test_openai_api_key_is_the_single_supported_deployment_variable(monkeypatch):
     monkeypatch.setenv("API_KEY", "legacy-token")
     monkeypatch.setenv("OPENAI_API_KEY", "preferred-token")
 
@@ -52,11 +52,11 @@ def test_openai_api_key_takes_priority_over_legacy_api_key(monkeypatch):
     assert getattr(error.value, "status_code", None) == HTTP_401_UNAUTHORIZED
 
 
-def test_legacy_api_key_remains_supported(monkeypatch):
+def test_legacy_api_key_is_not_used_when_openai_key_is_absent(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("API_KEY", "legacy-token")
 
-    assert api_key_checker.configured_api_key() == "legacy-token"
+    assert api_key_checker.configured_api_key() is None
 
 
 def test_missing_api_key_is_never_replaced_by_a_published_default(monkeypatch):

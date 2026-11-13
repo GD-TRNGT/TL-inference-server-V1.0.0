@@ -23,7 +23,7 @@
 Authorization: Bearer <API_KEY>
 ```
 
-生产环境必须在容器启动时设置一个自定义 `OPENAI_API_KEY`（也兼容旧变量 `API_KEY`），并在客户端使用相同值。`OPENAI_API_KEY` 优先于 `API_KEY`。镜像不再内置 `your-secret-key` 这类公开默认密钥；两者都未设置时，受保护接口会明确返回 `503`，不会在不安全的已知密钥下继续服务。修改变量后重启容器即可；不要把真实密钥写入脚本或文档。
+生产环境必须在容器启动时设置唯一的自定义变量 `OPENAI_API_KEY`，并在客户端使用相同值。镜像不再内置 `your-secret-key` 这类公开默认密钥；未设置 `OPENAI_API_KEY` 时，受保护接口会明确返回 `503`，不会在不安全的已知密钥下继续服务。修改变量后重启容器即可；不要把真实密钥写入脚本或文档。
 
 ```bash
 docker run ... -e OPENAI_API_KEY='replace-with-a-long-random-secret' ...
@@ -217,8 +217,8 @@ open("black_bird.jpg", "wb").write(response.content)
 
 | 现象 | 原因与处理 |
 | --- | --- |
-| `401 Unauthorized` | 缺少或错误的 `Authorization: Bearer ...`。确认客户端 token 与启动时的 `OPENAI_API_KEY` / `API_KEY` 一致。 |
-| `503 Service Unavailable`（API key） | 服务启动时未设置 `OPENAI_API_KEY` 或兼容变量 `API_KEY`；设置一个自定义随机密钥后重启容器。 |
+| `401 Unauthorized` | 缺少或错误的 `Authorization: Bearer ...`。确认客户端 token 与启动时的 `OPENAI_API_KEY` 一致。 |
+| `503 Service Unavailable`（API key） | 服务启动时未设置 `OPENAI_API_KEY`；设置一个自定义随机密钥后重启容器。 |
 | 图片文件只有几十字节 | 常见原因是把 401/400 错误 JSON 写进了 `.jpg`。使用 `--fail-with-body` 并检查 HTTP 状态。 |
 | `400` 尺寸错误 | `width`/`height` 必须同时提供，范围为 16–4096，均为 16 的倍数。 |
 | `/v1/videos/jobs` 返回 404 | 这是视频任务探针访问了图像服务未实现的路由；不影响 FLUX.3 图像 API。 |

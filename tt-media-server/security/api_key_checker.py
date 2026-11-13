@@ -18,16 +18,12 @@ api_key_header = APIKeyHeader(name="Authorization", auto_error=not NO_AUTH)
 def configured_api_key() -> str | None:
     """Return the configured bearer token without exposing it in logs.
 
-    ``OPENAI_API_KEY`` is the conventional deployment variable. ``API_KEY``
-    remains supported for existing deployments and scripts. Prefer the former
-    when both are present. There is deliberately no built-in production
-    default: a published ``your-secret-key`` makes every deployment public.
+    ``OPENAI_API_KEY`` is the single supported deployment variable. There
+    is deliberately no built-in production default: a published
+    ``your-secret-key`` makes every deployment public.
     """
-    for variable in ("OPENAI_API_KEY", "API_KEY"):
-        value = os.getenv(variable, "").strip()
-        if value:
-            return value
-    return None
+    value = os.getenv("OPENAI_API_KEY", "").strip()
+    return value or None
 
 
 def get_api_key(api_key: str | None = Security(api_key_header)):
@@ -37,7 +33,7 @@ def get_api_key(api_key: str | None = Security(api_key_header)):
     if expected_key is None:
         raise HTTPException(
             status_code=HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Server API key is not configured; set OPENAI_API_KEY or API_KEY",
+            detail="Server API key is not configured; set OPENAI_API_KEY",
         )
     expected_header = f"Bearer {expected_key}"
     if api_key is None or not secrets.compare_digest(api_key, expected_header):
