@@ -38,6 +38,10 @@ from models.common.utility_functions import is_blackhole
 from models.tt_dit.pipelines.flux1.pipeline_flux1 import Flux1Pipeline
 from models.tt_dit.pipelines.flux3.pipeline_flux3 import Flux3T2IPipeline
 from models.tt_dit.pipelines.flux3.t2i_contract import Flux3T2IRequest
+from models.tt_dit.pipelines.flux3_klein.pipeline_flux3_klein import (
+    Flux3KleinPipeline,
+    Flux3KleinRequest,
+)
 from models.tt_dit.parallel.config import (
     DiTParallelConfig,
     EncoderParallelConfig,
@@ -518,9 +522,56 @@ def _resolve_flux3_weights_path(settings_path: str | None) -> str | None:
     return settings_path
 
 
+def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
+    """Resolve an explicit FLUX.3 worker profile from its logical mesh."""
+    normalized = tuple(mesh_shape)
+    requested = os.environ.get("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
+    aliases = {
+        "legacy": "legacy-single",
+        "single": "legacy-single",
+        "single-card": "legacy-single",
+        "legacy-single": "legacy-single",
+        "sp2": "sp2",
+        "sp4": "sp4",
+        "sp-4": "sp4",
+        "sp8tp4": "sp8tp4",
+        "sp8-tp4": "sp8tp4",
+    }
+    if requested in {"", "auto"}:
+        detected = {
+            (1, 1): "legacy-single",
+            (2, 1): "sp2",
+            (4, 1): "sp4",
+            (4, 8): "sp8tp4",
+        }.get(normalized)
+        return detected or "tp"
+    try:
+        profile = aliases[requested]
+    except KeyError as exc:
+        raise ValueError(
+            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, or sp8tp4"
+        ) from exc
+    expected_mesh = {
+        "legacy-single": (1, 1),
+        "sp2": (2, 1),
+        "sp4": (4, 1),
+        "sp8tp4": (4, 8),
+    }[profile]
+    if normalized != expected_mesh:
+        raise ValueError(
+            f"FLUX3_EXECUTION_PROFILE={profile} requires mesh {expected_mesh}, got {normalized}"
+        )
+    return profile
+
+
 def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
     """Return the supported FLUX.3 TP degree for one worker mesh."""
     normalized = tuple(mesh_shape)
+    profile = _flux3_execution_profile(normalized)
+    if profile in {"legacy-single", "sp2", "sp4"}:
+        return 1
+    if profile == "sp8tp4":
+        return 4
     if os.environ.get("FLUX3_PARALLELISM", "tp").strip().lower() == "sp" and normalized == (2, 1):
         return 1
     # SP8 x TP4 uses axis 0 for tensor-parallel weights and axis 1 for
@@ -541,6 +592,15 @@ def _flux3_parallel_factors(
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     """Return (tensor-parallel, sequence-parallel) factors for a FLUX.3 mesh."""
     normalized = tuple(mesh_shape)
+    profile = _flux3_execution_profile(normalized)
+    if profile == "legacy-single":
+        return ((1, 0), (1, 0))
+    if profile == "sp2":
+        return ((1, 1), (2, 0))
+    if profile == "sp4":
+        return ((1, 1), (4, 0))
+    if profile == "sp8tp4":
+        return ((4, 0), (8, 1))
     parallelism = os.environ.get("FLUX3_PARALLELISM", "tp").strip().lower()
     if parallelism not in {"tp", "sp", "sp8tp4"}:
         raise ValueError("FLUX3_PARALLELISM must be 'tp', 'sp', or 'sp8tp4'")
@@ -595,9 +655,45 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 "FLUX3_COMPONENT_RESIDENCY must be 'resident' or 'per_request', "
                 f"got {self._component_residency!r}"
             )
+        self._execution_profile = _flux3_execution_profile(
+            tuple(self.settings.device_mesh_shape)
+        )
+        model_hint = os.environ.get("FLUX3_MODEL_VARIANT", "").strip().lower()
+        if not model_hint:
+            model_hint = (
+                "base"
+                if "base" in str(self.settings.model_weights_path).lower()
+                else "distilled"
+            )
+        if model_hint not in {"distilled", "base"}:
+            raise ValueError("FLUX3_MODEL_VARIANT must be 'distilled' or 'base'")
+        self._klein_model = model_hint
         self._tp_degree = _flux3_tp_degree(self.settings.device_mesh_shape)
 
     def create_pipeline(self):
+        if self._execution_profile in {"sp2", "sp4", "sp8tp4"}:
+            mesh_shape = tuple(self.ttnn_device.shape)
+            if self._component_residency != "resident":
+                raise ValueError("The upstream FLUX.3 Klein path requires resident components")
+            tp_factor, sp_factor = _flux3_parallel_factors(mesh_shape)
+            is_ring_mesh = mesh_shape in {(4, 1), (4, 8)}
+            topology = ttnn.Topology.Ring if is_ring_mesh else ttnn.Topology.Linear
+            num_links = 2 if is_ring_mesh else 1
+            weights_path = Path(_resolve_flux3_weights_path(self.settings.model_weights_path))
+            self.logger.info(
+                f"Device {self.device_id}: loading upstream FLUX.3 Klein "
+                f"model={self._klein_model}, TP{tp_factor[0]}xSP{sp_factor[0]} "
+                f"mesh={mesh_shape}, topology={topology.name}, prompt_upsampler=disabled"
+            )
+            return Flux3KleinPipeline(
+                self.ttnn_device,
+                snapshots={self._klein_model: weights_path},
+                sp_axis=sp_factor[1],
+                tp_axis=tp_factor[1],
+                topology=topology,
+                num_links=num_links,
+                upsample=False,
+            )
         topology = (
             ttnn.Topology.Ring
             if self._tp_degree > 2
@@ -674,7 +770,54 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             )
         return pipeline
 
+    async def warmup(self) -> bool:
+        if self._execution_profile not in {"sp2", "sp4", "sp8tp4"}:
+            return await super().warmup()
+        self.pipeline = await asyncio.to_thread(self.create_pipeline)
+        mesh_shape = tuple(self.ttnn_device.shape)
+        warmup_sizes = (1024,) if mesh_shape in {(2, 1), (4, 1)} else (1024, 2048, 4096)
+        self.logger.info(
+            f"Device {self.device_id}: warming {'/'.join(map(str, warmup_sizes))}"
+        )
+        await asyncio.to_thread(self.pipeline.warmup, warmup_sizes)
+        self.logger.info(f"Device {self.device_id}: upstream FLUX.3 Klein warmup completed")
+        return True
+
     def run(self, requests: list[ImageGenerateRequest]):
+        if self._execution_profile in {"sp2", "sp4", "sp8tp4"}:
+            request = requests[0]
+            if request.negative_prompt:
+                raise ValueError("The upstream FLUX.3 Klein API does not accept negative_prompt")
+            reference_payloads = getattr(request, "reference_images", None)
+            reference_payload = getattr(request, "reference_image", None)
+            legacy_image_payload = getattr(request, "image", None)
+            if sum(value is not None for value in (reference_payload, reference_payloads, legacy_image_payload)) > 1:
+                raise ValueError("provide only one of reference_images, reference_image, or image")
+            if reference_payload is not None or legacy_image_payload is not None:
+                reference_payloads = [reference_payload if reference_payload is not None else legacy_image_payload]
+            if reference_payloads and len(reference_payloads) > 1:
+                raise ValueError("The upstream SP path currently supports one reference image")
+            images = tuple(
+                self._image_manager.base64_to_pil_image(payload, target_mode="RGB")
+                for payload in (reference_payloads or ())
+            )
+            result = self.pipeline.generate(
+                Flux3KleinRequest(
+                    prompt=request.prompt,
+                    height=int(request.height or 2048),
+                    width=int(request.width or 2048),
+                    steps=(int(request.num_inference_steps) if request.num_inference_steps else None),
+                    model=self._klein_model,
+                    seed=int(request.seed or 0),
+                    guidance=(None if self._klein_model == "distilled" else getattr(request, "guidance_scale", None)),
+                    images=images,
+                )
+            )
+            self.logger.info(
+                f"Device {self.device_id}: upstream FLUX.3 Klein timings_s={result.timings}, "
+                f"cached_steps={result.cached_steps}, prompt_upsampler=disabled"
+            )
+            return [result.image]
         request = requests[0]
         height = request.height or 1024
         width = request.width or 1024
@@ -745,6 +888,20 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         return [result["image"]]
 
     def get_pipeline_device_params(self):
+        if self._execution_profile in {"sp2", "sp4", "sp8tp4"}:
+            mesh_shape = tuple(self.settings.device_mesh_shape)
+            if mesh_shape == (4, 8):
+                router_config = ttnn.FabricRouterConfig()
+                router_config.max_packet_payload_size_bytes = 8192
+                return {
+                    "l1_small_size": 65536,
+                    "fabric_config": ttnn.FabricConfig.FABRIC_1D_RING,
+                    "fabric_router_config": router_config,
+                }
+            return {
+                "l1_small_size": int(os.environ.get("FLUX3_L1_SMALL_SIZE", "131072")),
+                "fabric_config": ttnn.FabricConfig.FABRIC_1D_RING,
+            }
         # Multiple reference/output geometries retain halo/program metadata in
         # L1_SMALL. The old 64 KiB reservation exhausted this region at 1024p.
         # Keep at least the space required by the existing DiT static CBs: a

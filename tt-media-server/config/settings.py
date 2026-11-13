@@ -414,6 +414,56 @@ class Settings(BaseSettings):
             self.default_throttle_level = None
 
     def _set_mesh_overrides(self):
+        flux3_profile = os.getenv("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
+        if (
+            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and flux3_profile not in {"", "auto"}
+        ):
+            aliases = {
+                "legacy": "legacy-single",
+                "single": "legacy-single",
+                "single-card": "legacy-single",
+                "legacy-single": "legacy-single",
+                "sp2": "sp2",
+                "sp4": "sp4",
+                "sp-4": "sp4",
+                "sp8tp4": "sp8tp4",
+                "sp8-tp4": "sp8tp4",
+            }
+            try:
+                flux3_profile = aliases[flux3_profile]
+            except KeyError as exc:
+                raise ValueError(
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, or sp8tp4"
+                ) from exc
+            profile_meshes = {
+                "legacy-single": (1, 1),
+                "sp2": (2, 1),
+                # Four replicas of the weights; image-token rows are split across the Ring.
+                "sp4": (4, 1),
+                "sp8tp4": (4, 8),
+            }
+            expected_tp = {
+                "legacy-single": 1,
+                "sp2": 1,
+                "sp4": 1,
+                "sp8tp4": 4,
+            }[flux3_profile]
+            requested_tp = os.getenv("FLUX3_TP_SIZE")
+            if requested_tp is not None and int(requested_tp) != expected_tp:
+                logger.warning(
+                    f"FLUX3_EXECUTION_PROFILE={flux3_profile} overrides "
+                    f"FLUX3_TP_SIZE={requested_tp}; using TP{expected_tp}"
+                )
+            self.device_mesh_shape = profile_meshes[flux3_profile]
+            self.is_galaxy = flux3_profile != "legacy-single"
+            os.environ["FLUX3_PARALLELISM"] = flux3_profile
+            logger.info(
+                f"Applied FLUX.3 execution profile {flux3_profile}: "
+                f"mesh={self.device_mesh_shape}, is_galaxy={self.is_galaxy}"
+            )
+            return
+
         flux3_tp_size = os.getenv("FLUX3_TP_SIZE")
         if flux3_tp_size is not None:
             if self.model_runner != ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value:
