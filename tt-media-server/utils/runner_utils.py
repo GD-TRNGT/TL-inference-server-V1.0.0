@@ -158,6 +158,9 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         (1, 1): "n150_mesh_graph_descriptor.textproto",
         (2, 1): "n300_mesh_graph_descriptor.textproto",
         (1, 4): "n300_2x2_mesh_graph_descriptor.textproto",
+        # Each four-chip worker is a topology-local 2x2 N300 group, exposed
+        # logically as a 4x1 sequence-parallel Ring.
+        (4, 1): "n300_2x2_mesh_graph_descriptor.textproto",
         (2, 4): "t3k_mesh_graph_descriptor.textproto",
     }
 
