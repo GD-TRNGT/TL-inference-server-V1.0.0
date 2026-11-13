@@ -59,6 +59,14 @@ def test_legacy_api_key_is_not_used_when_openai_key_is_absent(monkeypatch):
     assert api_key_checker.configured_api_key() is None
 
 
+def test_missing_header_returns_401_when_key_is_configured(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "configured-token")
+
+    with pytest.raises(Exception) as error:
+        api_key_checker.get_api_key(None)
+    assert getattr(error.value, "status_code", None) == HTTP_401_UNAUTHORIZED
+
+
 def test_missing_api_key_is_never_replaced_by_a_published_default(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("API_KEY", raising=False)
