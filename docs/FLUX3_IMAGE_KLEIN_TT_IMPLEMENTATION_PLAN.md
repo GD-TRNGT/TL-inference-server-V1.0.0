@@ -28,7 +28,7 @@ TT-Metal 仓库：`/local/lnn/tt-metal`，分支：`flux-3-image-klein`
 | reference-image VAE encoder | 已实现 | TTNN 默认；CPU 作为显式回退 backend |
 | 32-worker T2I 压测 | 已完成 | Base/Distilled 各 200/200 成功，worker 0～31 全参与 |
 | 大图、多参考图压测 | 已完成 | 两模型各 14/14 矩阵、32 冷/暖态、200/200 |
-| API key 与输出尺寸契约 | 已实现并验证 | `OPENAI_API_KEY` 优先、`API_KEY` 兼容；输出边长 256--4096、16 对齐、最大 16 Mi-pixel、最大 8:1 比例 |
+| API key 与输出尺寸契约 | 已实现并验证 | 唯一 `OPENAI_API_KEY`；输出每边 16--4096、16 对齐、官方 4K 上限；无/错 token 401、非对齐尺寸 422 |
 | 2/4 芯片单请求模型并行 | 暂缓 | 当前范围不实施 |
 | Golden Data 逐层精度对齐 | 暂缓 | 当前范围不实施 |
 

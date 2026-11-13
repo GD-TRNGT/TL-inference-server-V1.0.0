@@ -27,8 +27,8 @@
 - 有序 `reference_images` 数组和 1～10 张参考图接入，兼容旧单图字段；Base/Distilled 各 9 个同步、异步及非法请求场景全部通过。
 - 单芯片 TTNN VAE reference encoder、111 个源张量映射、设备端 packing/BN 和条件 token 拼接；两模型含 1024 方图、横图/竖图及切回小图的 22 次 encoder 数值/尺寸切换测试及缓存重载通过。
 - 2026-11-06 用已提交的本地仓库源码构建正式镜像 `tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4`（约 32.6 GB）；镜像本体包含 TTNN reference encoder 默认值，不需要挂载 `TL-inference-server` 或 `tt-metal` 源码目录。
-- 该正式镜像已分别完成 Distilled 与 Base 的 32/32 worker 就绪、T2I、1/2/10 张参考图、异步轮询和 cancel 回归；请求图片 API 时需要 `Authorization: Bearer your-secret-key`，`/tt-liveness` 不需要鉴权。
-- 2026-11-13：图片 API 新增 `OPENAI_API_KEY`（优先）与 `API_KEY`（兼容）两种可配置 bearer token；FLUX.3 输出尺寸在 API 入队前按 256--4096、16 像素对齐、最大 16,777,216 像素和最大 8:1 宽高比校验；9 项单元测试通过。
+- 该正式镜像已分别完成 Distilled 与 Base 的 32/32 worker 就绪、T2I、1/2/10 张参考图、异步轮询和 cancel 回归；受保护图片 API 使用运行时注入的唯一 `OPENAI_API_KEY`，`/tt-liveness` 不需要鉴权。
+- 2026-11-13：按官方参考仓库重新核对后，图片 API 统一为唯一运行时 bearer token `OPENAI_API_KEY`，不再内置公开默认 token；FLUX.3 输出尺寸在入队前按官方 VAE 约束校验为每边 16--4096、16 像素对齐，不额外施加 8:1 或总像素限制。独立 SP4×8 镜像回归中 8/8 worker ready；无/错误密钥均为 HTTP 401、非 16 对齐为 HTTP 422，1024×1024/16-step 的有效 JPEG HTTP 用时 3.220 s；10 项单元测试通过。
 
 ### 1.1 当前交付状态
 
@@ -41,7 +41,7 @@
 | 大图与 32-worker 参考图压测 | 已完成 | 32 冷/暖态和 200/200 均通过；结果见 `FLUX3_LARGE_REFERENCE_AND_32_WORKER_BENCHMARK.md` |
 | 正式镜像 | 已完成并验证 | `tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4`；Base/Distilled 均在不挂源码目录时完成 32 worker、T2I、多参考图、async/poll/cancel |
 | 源码提交 | 已完成 | tt-metal `6926f00a4a`；TL-inference-server `eca825c5`、`52eee2fc` |
-| API key 与输出尺寸契约 | 已实现并验证 | `OPENAI_API_KEY` 优先、`API_KEY` 兼容；FLUX.3 支持合法矩形尺寸，不再错误限制为方图 |
+| API key 与输出尺寸契约 | 已实现并验证 | 唯一 `OPENAI_API_KEY`；输出每边 16--4096、16 对齐，官方 4K 上限；无/错 token 401、非对齐尺寸 422 |
 | 2/4 芯片单请求并行 | 暂缓 | 当前任务范围不实施 |
 | Golden Data 逐层精度对齐 | 暂缓 | 当前任务范围不实施 |
 
@@ -66,7 +66,7 @@ DOCKER_BUILDKIT=1 docker build --progress=plain \
 | Distilled | 32/32 ready | T2I、旧单图、1/2/10 图、坏图/11 图校验 | 12-step、256×256 成功并返回 1 张 PNG | 50-step、1024×1024 → `cancelled` | `/local/lnn/fluxcache/official_image_eca825c5_distilled_20261106/` |
 | Base | 32/32 ready | T2I、旧单图、1/2/10 图、坏图/11 图校验 | 12-step、256×256 成功并返回 1 张 PNG | 50-step、1024×1024 → `cancelled` | `/local/lnn/fluxcache/official_image_eca825c5_base_20261106/` |
 
-同步请求使用 `response_format=file`，成功项返回有效 PNG；非法 Base64 图片和第 11 张图片均在入队前返回 HTTP 422。由于 Dockerfile 的默认 API key 已启用，`/v1/images/*` 请求必须携带 `Authorization: Bearer your-secret-key`；`/tt-liveness` 为公开健康检查接口。测试脚本首次遗漏轮询请求的 Authorization header，造成 401；补齐 header 后 Base 与 Distilled 均成功完成异步轮询，因此该 401 不属于模型或服务功能失败。
+同步请求使用 `response_format=file`，成功项返回有效 PNG；非法 Base64 图片和第 11 张图片均在入队前返回 HTTP 422。当前镜像不内置 API key，`/v1/images/*` 请求必须携带与运行时 `OPENAI_API_KEY` 相同的 `Authorization: Bearer ...`；`/tt-liveness` 为公开健康检查接口。测试脚本首次遗漏轮询请求的 Authorization header，造成 401；补齐 header 后 Base 与 Distilled 均成功完成异步轮询，因此该 401 不属于模型或服务功能失败。
 
 ### 1.2 当前未完成工作
 

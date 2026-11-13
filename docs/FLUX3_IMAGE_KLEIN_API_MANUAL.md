@@ -20,16 +20,23 @@
 图像生成接口要求 Bearer token：
 
 ```http
-Authorization: Bearer <API_KEY>
+Authorization: Bearer <OPENAI_API_KEY 的值>
 ```
 
 生产环境必须在容器启动时设置唯一的自定义变量 `OPENAI_API_KEY`，并在客户端使用相同值。镜像不再内置 `your-secret-key` 这类公开默认密钥；未设置 `OPENAI_API_KEY` 时，受保护接口会明确返回 `503`，不会在不安全的已知密钥下继续服务。修改变量后重启容器即可；不要把真实密钥写入脚本或文档。
 
 ```bash
-docker run ... -e OPENAI_API_KEY='replace-with-a-long-random-secret' ...
+export FLUX3_API_KEY='replace-with-a-long-random-secret'
+docker run ... -e OPENAI_API_KEY="${FLUX3_API_KEY}" ...
 ```
 
 `/health`、`/tt-liveness`、`/v1/models` 等查询接口可不带 token；图像生成接口必须带 token。
+
+客户端将同一个值保存在本地 shell 变量中，避免将真实 token 写进请求文件：
+
+```bash
+export FLUX3_API_KEY='replace-with-a-long-random-secret'
+```
 
 ## 3. 常用接口
 
@@ -53,7 +60,7 @@ docker run ... -e OPENAI_API_KEY='replace-with-a-long-random-secret' ...
 ```bash
 curl --fail-with-body --show-error \
   -X POST "http://10.12.11.2:8000/v1/images/generations" \
-  -H "Authorization: Bearer your-secret-key" \
+  -H "Authorization: Bearer ${FLUX3_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "tt-flux.3-image-klein",
@@ -81,7 +88,7 @@ file black_bird.jpg
 ```bash
 curl --fail-with-body --show-error \
   -X POST "http://10.12.11.2:8000/v1/images/generations" \
-  -H "Authorization: Bearer your-secret-key" \
+  -H "Authorization: Bearer ${FLUX3_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "tt-flux.3-image-klein",
@@ -142,7 +149,7 @@ jq -n --arg ref "$ref" '{
 
 curl --fail-with-body --show-error \
   -X POST "http://10.12.11.2:8000/v1/images/generations" \
-  -H "Authorization: Bearer your-secret-key" \
+  -H "Authorization: Bearer ${FLUX3_API_KEY}" \
   -H "Content-Type: application/json" \
   --data-binary @request.json \
   --output reference_result.jpg
@@ -157,7 +164,7 @@ curl --fail-with-body --show-error \
 ```bash
 curl --fail-with-body --show-error \
   -X POST "http://10.12.11.2:8000/v1/images/generations/async" \
-  -H "Authorization: Bearer your-secret-key" \
+  -H "Authorization: Bearer ${FLUX3_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "tt-flux.3-image-klein",
@@ -173,7 +180,7 @@ curl --fail-with-body --show-error \
 
 ```bash
 curl --fail-with-body --show-error \
-  -H "Authorization: Bearer your-secret-key" \
+  -H "Authorization: Bearer ${FLUX3_API_KEY}" \
   "http://10.12.11.2:8000/v1/images/generations/<job_id>"
 ```
 
@@ -182,7 +189,7 @@ curl --fail-with-body --show-error \
 ```bash
 curl --fail-with-body --show-error \
   -X POST \
-  -H "Authorization: Bearer your-secret-key" \
+  -H "Authorization: Bearer ${FLUX3_API_KEY}" \
   "http://10.12.11.2:8000/v1/images/generations/<job_id>/cancel"
 ```
 
