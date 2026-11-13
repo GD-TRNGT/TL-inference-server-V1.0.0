@@ -34,13 +34,25 @@ def setup_runner_environment(
     )
     setup_cpu_threading_limits(cpu_threads, num_torch_threads)
 
-    if device_id:
+    flux3_sp4_auto_worker = (
+        settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+        and os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
+        in {"sp4", "sp-4"}
+        and device_id == "sp4-auto"
+    )
+    if flux3_sp4_auto_worker:
+        # A four-chip Galaxy Ring is selected by the fabric topology. Exporting
+        # four visible device IDs here would hide that topology from the solver.
+        os.environ.pop("TT_VISIBLE_DEVICES", None)
+        _logger.info("setup_runner_environment: SP4 uses topology-selected Galaxy chips")
+    elif device_id:
         os.environ["TT_VISIBLE_DEVICES"] = str(device_id)
         _logger.info(f"setup_runner_environment: TT_VISIBLE_DEVICES={device_id}")
 
     if (
         device_id
         and device_id != "-1"
+        and not flux3_sp4_auto_worker
         and settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
     ):
         cache_root = os.environ.get("FLUX3_TT_METAL_CACHE_ROOT")
@@ -111,20 +123,29 @@ def _setup_blackhole_mesh_config(tt_metal_home: str):
 def _setup_galaxy_mesh_config(tt_metal_home: str):
     """Configure mesh graph descriptors for Galaxy hardware"""
     flux3_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
+    flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
+    is_flux3_sp8tp4 = (
+        flux3_profile in {"sp8tp4", "sp8-tp4"}
+        or (flux3_profile in {"", "auto"} and flux3_parallelism == "sp8tp4")
+    )
+    is_flux3_sequence_parallel = (
+        flux3_profile in {"sp2", "sp4", "sp-4", "sp8tp4", "sp8-tp4"}
+        or (flux3_profile in {"", "auto"} and flux3_parallelism in {"sp", "sp4", "sp8tp4"})
+    )
     if (
         settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-        and flux3_parallelism == "sp8tp4"
+        and is_flux3_sp8tp4
     ):
         # The upstream FLUX.3 Klein SP8xTP4 tables target a 12x9 worker grid.
         # ``11,9`` exposes a 12x10 physical grid and leaves its last row for
         # CCL, avoiding the 8x8-grid Ring-SDPA L1 circular-buffer overlap.
         os.environ["TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE"] = "11,9"
-    else:
+    elif not is_flux3_sequence_parallel:
         os.environ["TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE"] = "7,7"
 
     # SP2 requires the explicit two-chip Galaxy descriptor mounted by the
     # deployment.  Do not replace it with the single-board N300 descriptor.
-    if flux3_parallelism in {"sp", "sp8tp4"}:
+    if is_flux3_sequence_parallel:
         explicit_descriptor = os.environ.get("TT_MESH_GRAPH_DESC_PATH")
         if explicit_descriptor:
             TTLogger().info(

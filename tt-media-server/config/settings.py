@@ -308,6 +308,21 @@ class Settings(BaseSettings):
         # bringing up or validating a parallel path.  Normal deployments keep
         # automatic topology-aware discovery and are unchanged when unset.
         flux3_device_ids = os.getenv("FLUX3_DEVICE_IDS")
+        flux3_profile = os.getenv("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
+        if (
+            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and flux3_profile in {"sp4", "sp-4"}
+        ):
+            if flux3_device_ids:
+                raise ValueError(
+                    "FLUX3_EXECUTION_PROFILE=sp4 selects its four physical chips "
+                    "through the Galaxy topology; unset FLUX3_DEVICE_IDS"
+                )
+            # Keep the whole Galaxy visible so the fabric placement solver can
+            # choose the physical 4-chip Ring rather than a linear subset.
+            self.device_ids = "(sp4-auto)"
+            logger.info("Using the topology-selected FLUX.3 SP4 worker")
+            return
         if self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value and flux3_device_ids:
             self.device_ids = flux3_device_ids
             logger.info(
