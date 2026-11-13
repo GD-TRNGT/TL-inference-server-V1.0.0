@@ -17,6 +17,13 @@ from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 # Flux models support fewer inference steps than other image models
 _FLUX_RUNNERS = {"tt-flux.1-dev", "tt-flux.1-schnell", "tt-flux.1-kontext-dev"}
+_FLUX3_RUNNER = "tt-flux.3-image-klein"
+_DEFAULT_MAX_RESOLUTION = 1536
+_FLUX3_MIN_RESOLUTION = 256
+_FLUX3_MAX_RESOLUTION = 4096
+_FLUX3_MAX_PIXELS = 4096 * 4096
+_FLUX3_MAX_ASPECT_RATIO = 8
+_FLUX3_SHAPE_MULTIPLE = 16
 _FLUX_MIN_INFERENCE_STEPS = 4
 _DEFAULT_MIN_INFERENCE_STEPS = 12
 _SKIP_STEP_VALIDATION_RUNNERS = {"tt-z-image-turbo"}
@@ -43,8 +50,8 @@ class BaseImageRequest(BaseRequest):
 
     # Optional output resolution (width/height). Runners that support per-request
     # resolution (e.g. FLUX.1-Kontext) honor these; others ignore them.
-    width: Optional[int] = Field(default=None, ge=256, le=1536)
-    height: Optional[int] = Field(default=None, ge=256, le=1536)
+    width: Optional[int] = Field(default=None, ge=_FLUX3_MIN_RESOLUTION)
+    height: Optional[int] = Field(default=None, ge=_FLUX3_MIN_RESOLUTION)
 
     # Private fields for internal processing
     _segments: Optional[List[int]] = PrivateAttr(default=None)
@@ -74,6 +81,36 @@ class BaseImageRequest(BaseRequest):
         # height (and vice versa), silently changing the aspect ratio.
         if (self.width is None) != (self.height is None):
             raise ValueError("width and height must be provided together")
+        model_runner = get_settings().model_runner
+        # Keep the established 1536 limit for other image runners. FLUX.3
+        # follows the published request contract: 256--4096 pixels per side,
+        # 16-pixel VAE/DiT alignment, <=16 Mi-pixels, and <=8:1 aspect ratio.
+        max_resolution = (
+            _FLUX3_MAX_RESOLUTION if model_runner == _FLUX3_RUNNER else _DEFAULT_MAX_RESOLUTION
+        )
+        for name, value in (("width", self.width), ("height", self.height)):
+            if value is not None and value > max_resolution:
+                raise ValueError(
+                    f"{name} must be <= {max_resolution} for "
+                    f"{model_runner}, got {value}"
+                )
+        if model_runner == _FLUX3_RUNNER and self.width is not None:
+            if self.width % _FLUX3_SHAPE_MULTIPLE or self.height % _FLUX3_SHAPE_MULTIPLE:
+                raise ValueError(
+                    "FLUX.3 width and height must be multiples of "
+                    f"{_FLUX3_SHAPE_MULTIPLE}; got {self.width}x{self.height}"
+                )
+            if self.width * self.height > _FLUX3_MAX_PIXELS:
+                raise ValueError(
+                    "FLUX.3 width * height must be <= "
+                    f"{_FLUX3_MAX_PIXELS:,}; got {self.width}x{self.height}"
+                )
+            aspect_ratio = max(self.width, self.height) / min(self.width, self.height)
+            if aspect_ratio > _FLUX3_MAX_ASPECT_RATIO:
+                raise ValueError(
+                    "FLUX.3 width and height must have an aspect ratio no wider than "
+                    f"{_FLUX3_MAX_ASPECT_RATIO}:1; got {self.width}x{self.height}"
+                )
         return self
 
     @model_validator(mode="after")

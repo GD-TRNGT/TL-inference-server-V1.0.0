@@ -29,6 +29,8 @@ ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
 # bake model weights into the image. Override the default checkpoint with:
 #   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein-base  # Base
 #   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein       # Distilled
+# Protect the OpenAI-compatible endpoints with an injected bearer token:
+#   -e OPENAI_API_KEY=<secret>  # API_KEY remains a legacy-compatible alias
 # 32-worker performance measurements on 2026-11-05 additionally used:
 #   -e TT_MM_THROTTLE_PERF=0
 #   -e TT_METAL_TDP_LIMIT_WATTS=160

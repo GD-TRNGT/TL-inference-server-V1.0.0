@@ -1,6 +1,6 @@
 # FLUX.3 Image Klein 在 Blackhole Galaxy 上的后续实施计划
 
-更新时间：2026-11-06
+更新时间：2026-11-13
 开发仓库：`/local/lnn/TL-inference-server`，分支：`flux-3-image-klein`
 TT-Metal 仓库：`/local/lnn/tt-metal`，分支：`flux-3-image-klein`
 
@@ -28,6 +28,7 @@ TT-Metal 仓库：`/local/lnn/tt-metal`，分支：`flux-3-image-klein`
 | reference-image VAE encoder | 已实现 | TTNN 默认；CPU 作为显式回退 backend |
 | 32-worker T2I 压测 | 已完成 | Base/Distilled 各 200/200 成功，worker 0～31 全参与 |
 | 大图、多参考图压测 | 已完成 | 两模型各 14/14 矩阵、32 冷/暖态、200/200 |
+| API key 与输出尺寸契约 | 已实现并验证 | `OPENAI_API_KEY` 优先、`API_KEY` 兼容；输出边长 256--4096、16 对齐、最大 16 Mi-pixel、最大 8:1 比例 |
 | 2/4 芯片单请求模型并行 | 暂缓 | 当前范围不实施 |
 | Golden Data 逐层精度对齐 | 暂缓 | 当前范围不实施 |
 
@@ -264,3 +265,17 @@ docker image inspect tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4 \
 - [已完成] 对调用方提供的 joint RoPE 检查其 sequence length，避免双流/三流 RoPE 被错误复用。
 - [暂缓] text/image/reference-image 三路 mode block 并发。原因是三路仍共享同一完整 Galaxy mesh 和分布式 collective；未验证独立 command queue、通信安全性和端到端收益前，不改变默认串行调度。
 - [后续] 通过 profiler 记录 mode block、single block、RoPE 构造和同步等待的耗时比例；若 mode block 占比有意义，再评估 command queue 或 mesh 切分设计。
+
+## 10. 2026-11-11：两芯片 SP2 状态与后续优化门槛
+
+| 项目 | 状态 | 当前结论/交付物 |
+|---|---|---|
+| 2 卡 SP2 服务 | **已实现并验证** | `FLUX3_TP_SIZE=2` + `FLUX3_PARALLELISM=sp`，Galaxy03 `(0,1)`、2×1 Line mesh，服务端口 `18093` |
+| SP2 T2I 文件响应 | **已验证** | `a black bird`、1024×1024、16 steps、seed 42 返回有效 PNG；同 seed 默认分块输出 SHA256 一致 |
+| SP2 热态性能基线 | **已完成** | 后 3 次平均：curl 9.449 s、pipeline 8.981 s、denoise 7.685 s、VAE decode 1.244 s |
+| 静态 RoPE cache | **已实现并验证** | text/image/joint RoPE 按设备/TP/SP/layout/token shape 缓存；SP2 不创建不使用的 joint RoPE |
+| Ring-SDPA chunk 调优 | **已完成一轮否决性验证** | `(512,512)`、`(320,512)`、`(288,512)` 均 L1 失败；`(256,384)` 可运行但只有约 0.2% 收益且图像 PSNR 30.33 dB，已撤回 |
+| 2 卡 Golden Data 对齐 | **未开始** | 需要官方 PyTorch/vLLM 中间层和最终图门限；在此之前不接受仅凭小幅吞吐提升造成的数值变化 |
+| 2 卡性能优化下一阶段 | **待开始** | 先用 profiler 分离 Ring SDPA、matmul、VAE、host/device copy；再针对已证实热点研究 streaming FP32 destination、per-device chunks、matmul blocking、2D/H-sharded VAE |
+
+约束：当前 TP4 正式容器已停止以释放 Galaxy03 的芯片给 SP2；在 SP2 工作完成前不恢复。所有可运行候选都必须同时满足 L1 无溢出、服务回归、固定 seed 的 Golden/数值验收和至少超过测量噪声的性能收益，才允许进入提交候选。

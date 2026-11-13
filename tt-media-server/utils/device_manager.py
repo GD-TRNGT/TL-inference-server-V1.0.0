@@ -127,6 +127,20 @@ class DeviceManager:
         logger.info("Device groups of 8: %s", groups)
         return groups
 
+    def get_device_groups_of_thirty_two(self) -> list[tuple[int, ...]]:
+        """(4,8) mesh - verify and return the one complete 32-chip Galaxy."""
+        try:
+            tray_mapping = self._run_tt_smi()
+        except DeviceDiscoveryError as e:
+            logger.error("Galaxy 32-chip discovery failed: %s", e)
+            return []
+        devices = tuple(sorted(device for ids in tray_mapping.values() for device in ids))
+        if len(devices) != 32:
+            logger.error("Expected exactly 32 Galaxy devices, found %d: %s", len(devices), devices)
+            return []
+        logger.info("Device group of 32: %s", devices)
+        return [devices]
+
     def _get_local_groups_from_tt_smi(self, group_size: int) -> list[tuple[int, ...]]:
         """Build topology-local fixed-size groups from ordered Galaxy tray IDs."""
         if group_size not in (2, 4):

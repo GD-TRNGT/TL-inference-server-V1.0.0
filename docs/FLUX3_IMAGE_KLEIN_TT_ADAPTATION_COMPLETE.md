@@ -1,6 +1,6 @@
 # FLUX.3 Image Klein 在 TT-Metal / TL-inference-server 上的完整适配记录
 
-更新时间：2026-11-06
+更新时间：2026-11-13
 
 ## 1. 当前结论
 
@@ -28,6 +28,7 @@
 - 单芯片 TTNN VAE reference encoder、111 个源张量映射、设备端 packing/BN 和条件 token 拼接；两模型含 1024 方图、横图/竖图及切回小图的 22 次 encoder 数值/尺寸切换测试及缓存重载通过。
 - 2026-11-06 用已提交的本地仓库源码构建正式镜像 `tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4`（约 32.6 GB）；镜像本体包含 TTNN reference encoder 默认值，不需要挂载 `TL-inference-server` 或 `tt-metal` 源码目录。
 - 该正式镜像已分别完成 Distilled 与 Base 的 32/32 worker 就绪、T2I、1/2/10 张参考图、异步轮询和 cancel 回归；请求图片 API 时需要 `Authorization: Bearer your-secret-key`，`/tt-liveness` 不需要鉴权。
+- 2026-11-13：图片 API 新增 `OPENAI_API_KEY`（优先）与 `API_KEY`（兼容）两种可配置 bearer token；FLUX.3 输出尺寸在 API 入队前按 256--4096、16 像素对齐、最大 16,777,216 像素和最大 8:1 宽高比校验；9 项单元测试通过。
 
 ### 1.1 当前交付状态
 
@@ -40,6 +41,7 @@
 | 大图与 32-worker 参考图压测 | 已完成 | 32 冷/暖态和 200/200 均通过；结果见 `FLUX3_LARGE_REFERENCE_AND_32_WORKER_BENCHMARK.md` |
 | 正式镜像 | 已完成并验证 | `tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4`；Base/Distilled 均在不挂源码目录时完成 32 worker、T2I、多参考图、async/poll/cancel |
 | 源码提交 | 已完成 | tt-metal `6926f00a4a`；TL-inference-server `eca825c5`、`52eee2fc` |
+| API key 与输出尺寸契约 | 已实现并验证 | `OPENAI_API_KEY` 优先、`API_KEY` 兼容；FLUX.3 支持合法矩形尺寸，不再错误限制为方图 |
 | 2/4 芯片单请求并行 | 暂缓 | 当前任务范围不实施 |
 | Golden Data 逐层精度对齐 | 暂缓 | 当前任务范围不实施 |
 
@@ -1766,3 +1768,64 @@ TT-Metal 的 `transformer_flux3.py:Flux3Transformer.forward()` 增加可选 `joi
 | tt-metal | `models/tt_dit/pipelines/flux3/pipeline_flux3.py` | 在 denoise loop 外建立 prompt/negative joint RoPE，并传给每一次 Transformer forward |
 
 已完成 Python `py_compile` 和 `git diff --check`。TT-Metal 提交：`50f8a61b4e Optimize FLUX.3 joint RoPE reuse`。正式镜像和 API 回归的结果在本节后续版本记录补充。
+
+## 33. 2026-11-11：Galaxy03 两芯片 SP2 实机验证与 Ring-SDPA 调优结论
+
+### 33.1 目标、服务与最终可用配置
+
+本轮在 Galaxy03 验证 FLUX.3 的 `TP1 × SP2`：Transformer 权重在两颗芯片复制，图像 token 沿第一轴切为两份；text token 保持复制并作为 Ring joint stream。实际服务容器为 `flux3-sp2-65169-layoutcache`，监听 `18093`，使用：
+
+- `FLUX3_TP_SIZE=2`
+- `FLUX3_PARALLELISM=sp`
+- `FLUX3_DEVICE_IDS=(0,1)`
+- `TT_MESH_GRAPH_DESC_PATH=/tmp/bh_2_1_line_line.textproto`
+- `TT_MM_THROTTLE_PERF=0`、`TT_METAL_TDP_LIMIT_WATTS=160`
+
+TP4 容器 `flux3-glx-1x4-ring` 因占用整机 32 颗芯片，已停止；本轮不恢复它。SP2 最终保持默认 Ring-SDPA 分块 `(q=256,k=256)`，服务健康、`model_ready=true`。
+
+### 33.2 已实现：按 layout 缓存静态 RoPE
+
+`/local/lnn/tt-metal/models/tt_dit/pipelines/flux3/pipeline_flux3.py` 新增三个常驻于 pipeline 实例的设备端缓存：
+
+| 实现位置 | 缓存内容 | cache key 包含的边界 |
+|---|---|---|
+| `__init__()` 的 `_text_rope_cache` | 正/负 prompt 的 text RoPE | device mesh、TP/SP factor、SP axis、text token 数 |
+| `_cached_image_rope()` 的 `_image_rope_cache` | 指定宽高/参考图数量的 image RoPE | layout scope、latent 高宽、参考图布局 |
+| `_cached_t2i_joint_rope()` 的 `_joint_rope_cache` | 非 SP T2I 的 text+image joint RoPE | layout scope、text/image token 长度 |
+
+`run_external_prompt_embeds()` 改为首先查询这些缓存。SP2 路径直接将 `prompt_joint_rope` / `negative_joint_rope` 设为 `None`，因为 `Flux3Transformer.forward_sequence_parallel()` 直接将 text/image RoPE 传给 `ring_joint_scaled_dot_product_attention`，不会消费拼接后的 joint RoPE。这个改动不改变 RoPE 数值、模型权重或 scheduler。
+
+### 33.3 基线实测
+
+请求固定为 `a black bird`、`1024×1024`、`16 steps`、`seed=42`、`response_format=file`、PNG。先执行一次不计入统计的 warmup，再连续执行四次，取后 3 次。四个基线 PNG 的 SHA256 完全相同，说明该路径在同 seed 下确定性输出。
+
+| 指标 | 后 3 次平均 |
+|---|---:|
+| curl 端到端 | 9.449 s |
+| pipeline total | 8.981 s |
+| denoise | 7.685 s |
+| VAE decode | 1.244 s |
+
+结果保存于 `/local/lnn/fluxcache/sp2-results/flux3_sp2_65169_layoutcache_1024_16steps_seed42_run{1..4}.png`；详细客户端耗时在 `/local/lnn/fluxcache/logs/flux3_sp2_65169_layoutcache_1024_16steps_metrics.txt`。
+
+### 33.4 未保留：按 #65169 思路尝试 Ring-SDPA 分块
+
+当前 `attention_opt.py` 对 `(Blackhole, SP2, TP1)` 没有专用条目，1024 图的全局图像长度 4096 使用默认 `(256,256)`。本轮对照上游 #65169“按每设备 rows 选择分块”的思想，做了三项真实设备尝试；所有候选在测试后已从源码撤回。
+
+| 候选 | 真机结果 | 结论 |
+|---|---|---|
+| `(512,512)` | 静态 circular buffer `2,250,816 B`，超过 L1 `1,572,864 B` | 无法 warmup，撤回 |
+| `(320,512)` | static CB `1,648,704 B`，仍超过 L1 | 无法 warmup，撤回 |
+| `(288,512)` | static CB 与运行时 L1 buffer 重叠（static end `1,548,352`，buffer start `1,438,720`） | 无法 warmup，撤回 |
+| `(256,384)` | 可运行；pipeline -0.21%、denoise -0.24%、curl -0.18% | 同 seed PNG PSNR 仅 30.33 dB，89.37% 像素不同；收益过小，不接受，撤回 |
+
+`(256,384)` 的图像哈希不同不是服务编码问题，而是 Ring attention 的 BF16 分块/归约顺序变化造成的数值差异。当前没有官方 Golden Data 门限支持以约 0.2% 速度收益交换这一差异，因此最终恢复默认分块。恢复后同 seed 输出 SHA256 已再次与基线完全一致。
+
+### 33.5 当前结论与下一步
+
+- [已实现并验证] SP2 服务、2×1 Line mesh、resident prompt encoder/Transformer/VAE、请求级静态 RoPE 缓存。
+- [已验证] 1024×1024、16-step T2I 的健康检查、文件响应、确定性输出和热态性能。
+- [已撤回] 本轮三个 L1 不可用 Ring-SDPA 分块以及一个精度收益不划算的可运行候选；`attention_opt.py` 没有保留本轮试验改动。
+- [未开始] 以 profiler/Golden Data 为门槛，研究 Ring-SDPA streaming FP32 destination、per-device row chunk table、matmul blocking 和 VAE 2D/H-sharded decode。后续不得仅凭 PNG 可解码或单次时间提交变更。
+
+本轮结束时 TT-Metal 工作树仍有 `transformer_flux3.py` 与 `pipeline_flux3.py` 两个未提交文件：前者包含 SP2 路径，后者包含 SP2 调度和本节的 RoPE cache；在与完整回归/提交边界确认前没有新建 commit。

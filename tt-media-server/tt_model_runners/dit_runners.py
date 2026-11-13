@@ -521,12 +521,16 @@ def _resolve_flux3_weights_path(settings_path: str | None) -> str | None:
 def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
     """Return the supported FLUX.3 TP degree for one worker mesh."""
     normalized = tuple(mesh_shape)
-    degrees = {(1, 1): 1, (2, 1): 2, (1, 4): 4, (4, 1): 4}
+    if os.environ.get("FLUX3_PARALLELISM", "tp").strip().lower() == "sp" and normalized == (2, 1):
+        return 1
+    # SP8 x TP4 uses axis 0 for tensor-parallel weights and axis 1 for
+    # sequence-parallel image tokens.
+    degrees = {(1, 1): 1, (2, 1): 2, (1, 4): 4, (4, 1): 4, (4, 8): 4}
     try:
         return degrees[normalized]
     except KeyError as exc:
         raise ValueError(
-            "FLUX.3 supports only mesh shapes (1,1), (2,1), (1,4), or (4,1); "
+            "FLUX.3 supports only mesh shapes (1,1), (2,1), (1,4), (4,1), or (4,8); "
             f"got {normalized}"
         ) from exc
 
@@ -537,6 +541,27 @@ def _flux3_parallel_factors(
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     """Return (tensor-parallel, sequence-parallel) factors for a FLUX.3 mesh."""
     normalized = tuple(mesh_shape)
+    parallelism = os.environ.get("FLUX3_PARALLELISM", "tp").strip().lower()
+    if parallelism not in {"tp", "sp", "sp8tp4"}:
+        raise ValueError("FLUX3_PARALLELISM must be 'tp', 'sp', or 'sp8tp4'")
+    if parallelism == "sp8tp4":
+        if normalized == (4, 8):
+            # Match upstream FLUX.3 Klein: TP4 on axis 0 and SP8 on axis 1.
+            return ((4, 0), (8, 1))
+        raise ValueError(
+            "FLUX.3 SP8xTP4 requires a (4, 8) worker mesh; "
+            f"got {normalized}"
+        )
+    if parallelism == "sp":
+        if normalized == (2, 1):
+            # The physical first axis is the sequence dimension.  Axis 1 has
+            # one device and is retained as the logical TP axis so DiT weights
+            # stay replicated across the SP pair.
+            return ((1, 1), (2, 0))
+        raise ValueError(
+            "FLUX.3 SP currently supports only a (2, 1) worker mesh; "
+            f"got {normalized}"
+        )
     factors = {
         (1, 1): ((1, 0), (1, 0)),
         (2, 1): ((2, 0), (1, 0)),
@@ -578,9 +603,11 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             if self._tp_degree > 2
             else ttnn.Topology.Linear
         )
+        _, sp_factor = _flux3_parallel_factors(self.settings.device_mesh_shape)
         self._ccl_manager = CCLManager(
             self.ttnn_device,
-            num_links=1,
+            # Upstream's Galaxy 4x8 Ring configuration uses two CCL links.
+            num_links=2 if self._tp_degree == 4 and sp_factor[0] == 8 else 1,
             topology=topology,
         )
         tp_factor, sp_factor = _flux3_parallel_factors(
@@ -729,7 +756,10 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             "l1_small_size": l1_small_size,
             "fabric_config": (
                 ttnn.FabricConfig.FABRIC_1D_RING
-                if _flux3_tp_degree(self.settings.device_mesh_shape) > 1
+                if (
+                    _flux3_tp_degree(self.settings.device_mesh_shape) > 1
+                    or _flux3_parallel_factors(self.settings.device_mesh_shape)[1][0] > 1
+                )
                 else ttnn.FabricConfig.DISABLED
             ),
         }

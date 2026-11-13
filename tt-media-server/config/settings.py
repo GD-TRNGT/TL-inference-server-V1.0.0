@@ -304,6 +304,18 @@ class Settings(BaseSettings):
         if not self.is_galaxy:
             return
 
+        # Restrict a FLUX.3 Galaxy deployment to explicit worker groups when
+        # bringing up or validating a parallel path.  Normal deployments keep
+        # automatic topology-aware discovery and are unchanged when unset.
+        flux3_device_ids = os.getenv("FLUX3_DEVICE_IDS")
+        if self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value and flux3_device_ids:
+            self.device_ids = flux3_device_ids
+            logger.info(
+                "Using explicit FLUX.3 worker device IDs: "
+                f"{self.device_ids!r}"
+            )
+            return
+
         dm = DeviceManager()
         devices = []
         mesh = self.device_mesh_shape
@@ -350,8 +362,17 @@ class Settings(BaseSettings):
                         "Ensure tt-smi is available and returns at least 8 devices per tray."
                     )
 
+            elif mesh == (4, 8):
+                logger.info("Running Galaxy FLUX.3 SP8xTP4 32-chip device discovery...")
+                devices = dm.get_device_groups_of_thirty_two()
+                if not devices:
+                    raise RuntimeError(
+                        "Galaxy FLUX.3 SP8xTP4 (4,8): device discovery returned no 32-chip group. "
+                        "Ensure tt-smi reports all 32 devices on this Galaxy."
+                    )
+
         except Exception as e:
-            if mesh in ((2, 1), (1, 4), (2, 4)):
+            if mesh in ((2, 1), (1, 4), (2, 4), (4, 8)):
 
                 raise RuntimeError(
                     f"Device discovery failed for mesh {mesh}: {e}. "
@@ -404,6 +425,20 @@ class Settings(BaseSettings):
                 tp_size = int(flux3_tp_size)
             except ValueError as exc:
                 raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, or 4") from exc
+            flux3_parallelism = os.getenv("FLUX3_PARALLELISM", "tp").strip().lower()
+            if flux3_parallelism == "sp8tp4":
+                if tp_size != 4:
+                    raise ValueError("FLUX3_PARALLELISM=sp8tp4 requires FLUX3_TP_SIZE=4")
+                # One 32-chip worker: axis 0 is TP4 and axis 1 is SP8.
+                self.device_mesh_shape = (4, 8)
+                self.is_galaxy = True
+                logger.info(
+                    "Applied FLUX.3 SP8xTP4 override: FLUX3_TP_SIZE=4, "
+                    "mesh=(4, 8), is_galaxy=True"
+                )
+                return
+            if flux3_parallelism not in {"tp", "sp"}:
+                raise ValueError("FLUX3_PARALLELISM must be 'tp', 'sp', or 'sp8tp4'")
             # TP4 is pure tensor parallelism.  A physical 2x2 N300 group can
             # be exposed as either logical 1x4 (axis 1) or logical 4x1 (axis 0)
             # Ring mesh; choose explicitly so their CCL behaviour can be compared.

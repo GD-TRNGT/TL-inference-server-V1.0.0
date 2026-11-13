@@ -110,7 +110,28 @@ def _setup_blackhole_mesh_config(tt_metal_home: str):
 
 def _setup_galaxy_mesh_config(tt_metal_home: str):
     """Configure mesh graph descriptors for Galaxy hardware"""
-    os.environ["TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE"] = "7,7"
+    flux3_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
+    if (
+        settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+        and flux3_parallelism == "sp8tp4"
+    ):
+        # The upstream FLUX.3 Klein SP8xTP4 tables target a 12x9 worker grid.
+        # ``11,9`` exposes a 12x10 physical grid and leaves its last row for
+        # CCL, avoiding the 8x8-grid Ring-SDPA L1 circular-buffer overlap.
+        os.environ["TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE"] = "11,9"
+    else:
+        os.environ["TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE"] = "7,7"
+
+    # SP2 requires the explicit two-chip Galaxy descriptor mounted by the
+    # deployment.  Do not replace it with the single-board N300 descriptor.
+    if flux3_parallelism in {"sp", "sp8tp4"}:
+        explicit_descriptor = os.environ.get("TT_MESH_GRAPH_DESC_PATH")
+        if explicit_descriptor:
+            TTLogger().info(
+                "Keeping explicit FLUX.3 SP mesh descriptor: "
+                f"{explicit_descriptor}"
+            )
+            return
 
     mesh_descriptors = {
         (1, 1): "n150_mesh_graph_descriptor.textproto",
