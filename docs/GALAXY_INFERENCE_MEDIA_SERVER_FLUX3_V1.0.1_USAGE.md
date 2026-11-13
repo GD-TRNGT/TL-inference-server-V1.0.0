@@ -1,19 +1,19 @@
-# Galaxy Inference Media Server — FLUX.3 Image Klein TL V1.0.2
+# Galaxy Inference Media Server — FLUX.3 Image Klein TL V1.0.3
 
 ## 1. 正式镜像
 
 Docker repository 名必须使用小写，因此正式名称为：
 
 ```text
-galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.2-rebuild
+galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.4-sp8
 ```
 
 构建来源：
 
 | 项目 | 版本 |
 | --- | --- |
-| TL-inference-server | `flux3-sp4-12x10-rebuild`（自动 worker 拓扑、12×10、鉴权与官方尺寸契约） |
-| tt-metal | 已验证的 SP4 safe-path snapshot（派生基础镜像中） |
+| TL-inference-server | `flux3-sp4-12x10-rebuild`（自动 worker 拓扑、12×10、鉴权、官方尺寸契约及 SP8 Ring 分组） |
+| tt-metal | FLUX.3 Klein TP1×SPN safe projection path（SP4/SP8 避开 factor-one TP 轴的非法 fused MMRS） |
 | 默认模型 | `/local/models/flux-3-image-klein` 的 Distilled checkpoint |
 
 模型权重不会被复制到镜像。运行时必须只读挂载 `/local/models`。
@@ -23,20 +23,20 @@ galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.2-rebuild
 ```bash
 docker build --progress=plain \
   -f /local/lnn/flux3-sp4-12x10-image-context/Dockerfile \
-  -t galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.2-rebuild \
+  -t galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.3-sp8 \
   /local/lnn/flux3-sp4-12x10-image-context
 ```
 
 本次构建日志：
 
 ```text
-/local/lnn/fluxcache/logs/galaxy-inference-media-server-flux3-v1.0.2-build.log
+/local/lnn/fluxcache/logs/galaxy-inference-media-server-flux3-v1.0.3-build.log
 ```
 
 构建完成后核对：
 
 ```bash
-docker image inspect galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.2-rebuild \
+docker image inspect galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.3-sp8 \
   --format '{{.Id}} {{.Size}}'
 ```
 
@@ -45,7 +45,7 @@ docker image inspect galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.2-
 在 Galaxy03 上直接流式导出、传输和载入，不在中间落一个几十 GB 的未压缩 tar：
 
 ```bash
-docker save galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.2-rebuild \
+docker save galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.3-sp8 \
   | zstd -T0 -3 \
   | ssh tt@10.12.11.2 'zstd -d | docker load'
 ```
@@ -53,7 +53,7 @@ docker save galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.2-rebuild \
 Galaxy02 上确认：
 
 ```bash
-docker image inspect galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.2-rebuild \
+docker image inspect galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.3-sp8 \
   --format '{{.Id}} {{.Size}}'
 ```
 
@@ -66,11 +66,14 @@ docker image inspect galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.2-
 | `legacy-single` | 1 | 32 | 独立单卡推理 |
 | `sp2` | 2 | 16 | SP2 |
 | `sp4` | 4 | 8 | SP4 Ring |
+| `sp8` | 8 | 4 | TP1 × SP8 Ring |
 | `sp8tp4` | 32 | 1 | SP8 × TP4 |
 
 `legacy-single` 因而并不是“只启动一个单卡 worker”：默认会创建 **32 个单卡 worker**。如需只为调试启动 chip 0 的一个 worker，可额外设置 `FLUX3_DEVICE_IDS='(0)'`；这会关闭自动拆分，不可用于完整 Galaxy 吞吐部署。
 
 所有 profile 均保持以下运行约束：`TT_MM_THROTTLE_PERF=0`、`TT_METAL_TDP_LIMIT_WATTS=160`、`FLUX3_CORE_GRID_OVERRIDE=12x10`。profile 自行确定 mesh 和 TP/SP 轴，因此无需再设置 `FLUX3_PARALLELISM` 或 `FLUX3_TP_SIZE`。
+
+`sp8` 不是将每个 tray 的连续 8 张卡直接作为一个 worker。Galaxy 的有效 8 卡 Ring 是跨相邻两个 tray 的 column 子网格；服务依据 TT-Metal upstream 的 `create_submeshes(MeshShape(8,1))` 顺序自动发现四组 Ring：`(0,1,2,3,11,10,9,8)`、`(4,5,6,7,15,14,13,12)`、`(28,29,30,31,23,22,21,20)`、`(24,25,26,27,19,18,17,16)`。不要手动覆写 `FLUX3_DEVICE_IDS`，否则会绕过该安全映射。
 
 ## 5. Galaxy02：SP4×8（8 个四卡 worker）启动
 
@@ -102,7 +105,7 @@ docker run -d \
   -e TT_MM_THROTTLE_PERF=0 \
   -e TT_METAL_TDP_LIMIT_WATTS=160 \
   -e OPENAI_API_KEY='replace-with-a-long-random-secret' \
-  galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.2-rebuild
+galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.3-sp8
 ```
 
 如需切换拓扑，只需要替换容器名和下面这一行；不要添加 `FLUX3_DEVICE_IDS`：
@@ -116,6 +119,9 @@ docker run -d \
 
 # 8 个四卡 SP4 Ring worker（上例的默认配置）
 -e FLUX3_EXECUTION_PROFILE=sp4
+
+# 4 个八卡 TP1×SP8 Ring worker
+-e FLUX3_EXECUTION_PROFILE=sp8
 
 # 1 个 32 卡 SP8×TP4 worker
 -e FLUX3_EXECUTION_PROFILE=sp8tp4
@@ -151,6 +157,12 @@ curl --fail-with-body --show-error \
 ```
 
 输出尺寸规则：宽高必须同时提供；每边 `16–4096`、均为 16 的倍数。该上限与官方模型卡的“up to 4K”一致；官方参考实现没有额外的总像素或宽高比校验。
+
+`sp8` 是容量受限的部署 profile：每个 8 卡 worker 保持完整的 resident Qwen3-VL、DiT 和 VAE，因此只接受正方形 `1024×1024` 或 `2048×2048`。`4096×4096` 会在 API 输入校验阶段返回 HTTP 422；请改用 32 卡 `sp8tp4` profile。其它 profile 仍按上述官方 16–4096、16 对齐规则校验。
+
+## 6.1 SP8 cold start
+
+SP8 会自动形成 4 个 8×1 column Ring worker。启动前必须完成完整 Galaxy reset：停止旧容器后在后台运行 `tt-smi -glx_reset_auto`，确认日志包含 `All 32 chips found` 和 `Re-initialized 32 boards after reset`，再启动容器。默认每一个 Ring 在前一个 worker 报告真实 warmup ready 后再等待 120 秒才启动下一组；全量 cold start 约 8 分钟。`/health=200` 仅代表首个 worker ready，必须检查 `/tt-liveness` 中 4 个 worker 都是 `is_ready=true`，或日志出现 `All workers ready`。
 
 ## 7. 鉴权规则
 

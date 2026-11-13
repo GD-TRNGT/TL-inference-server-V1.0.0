@@ -270,6 +270,43 @@ Mapping of trays to devices on the galaxy:
         ]
         self.assertEqual(result, expected)
 
+    def test_create_flux3_sp8_groups_matches_galaxy_column_rings(self):
+        """SP8 workers must use Galaxy column Rings, not per-tray groups."""
+        # Galaxy03's physical tray order is 0x00, 0x40, 0xc0, 0x80;
+        # device IDs are not monotonically ordered across the bottom pair.
+        galaxy_trays = {
+            1: list(range(0, 8)),
+            2: list(range(8, 16)),
+            3: list(range(24, 32)),
+            4: list(range(16, 24)),
+        }
+        result = self.device_manager._create_flux3_sp8_groups(
+            galaxy_trays
+        )
+        self.assertEqual(
+            result,
+            [
+                (0, 1, 2, 3, 11, 10, 9, 8),
+                (4, 5, 6, 7, 15, 14, 13, 12),
+                (28, 29, 30, 31, 23, 22, 21, 20),
+                (24, 25, 26, 27, 19, 18, 17, 16),
+            ],
+        )
+
+    @patch.object(DeviceManager, "_run_tt_smi")
+    def test_get_flux3_sp8_groups_success(self, mock_run_tt_smi):
+        mock_run_tt_smi.return_value = {
+            1: list(range(0, 8)),
+            2: list(range(8, 16)),
+            3: list(range(24, 32)),
+            4: list(range(16, 24)),
+        }
+
+        result = self.device_manager.get_flux3_sp8_groups()
+
+        self.assertEqual(result[0], (0, 1, 2, 3, 11, 10, 9, 8))
+        self.assertEqual(result[-1], (24, 25, 26, 27, 19, 18, 17, 16))
+
     @patch.object(DeviceManager, "_run_tt_smi")
     def test_get_device_groups_of_eight_failure(self, mock_run_tt_smi):
         """Test get_device_groups_of_eight when _run_tt_smi fails."""

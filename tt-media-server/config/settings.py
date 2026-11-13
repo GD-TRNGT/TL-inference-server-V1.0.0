@@ -362,6 +362,18 @@ class Settings(BaseSettings):
                         "Ensure tt-smi is available and returns at least 8 devices per tray."
                     )
 
+            elif mesh == (8, 1):
+                logger.info(
+                    "Running Galaxy FLUX.3 SP8 device discovery "
+                    "(one topology-local 8-chip Ring per worker)..."
+                )
+                devices = dm.get_flux3_sp8_groups()
+                if not devices:
+                    raise RuntimeError(
+                        "Galaxy FLUX.3 SP8 (8,1): device discovery returned no "
+                        "8-chip Ring groups. Ensure tt-smi reports all four Galaxy trays."
+                    )
+
             elif mesh == (4, 8):
                 logger.info("Running Galaxy FLUX.3 SP8xTP4 32-chip device discovery...")
                 devices = dm.get_device_groups_of_thirty_two()
@@ -372,7 +384,7 @@ class Settings(BaseSettings):
                     )
 
         except Exception as e:
-            if mesh in ((2, 1), (1, 4), (2, 4), (4, 8)):
+            if mesh in ((2, 1), (1, 4), (2, 4), (8, 1), (4, 8)):
 
                 raise RuntimeError(
                     f"Device discovery failed for mesh {mesh}: {e}. "
@@ -427,6 +439,8 @@ class Settings(BaseSettings):
                 "sp2": "sp2",
                 "sp4": "sp4",
                 "sp-4": "sp4",
+                "sp8": "sp8",
+                "sp-8": "sp8",
                 "sp8tp4": "sp8tp4",
                 "sp8-tp4": "sp8tp4",
             }
@@ -434,19 +448,23 @@ class Settings(BaseSettings):
                 flux3_profile = aliases[flux3_profile]
             except KeyError as exc:
                 raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, or sp8tp4"
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, sp8, or sp8tp4"
                 ) from exc
             profile_meshes = {
                 "legacy-single": (1, 1),
                 "sp2": (2, 1),
                 # Four replicas of the weights; image-token rows are split across the Ring.
                 "sp4": (4, 1),
+                # One topology-local Galaxy tray per worker. Weights are
+                # replicated; image-token rows are split over its 8-chip Ring.
+                "sp8": (8, 1),
                 "sp8tp4": (4, 8),
             }
             expected_tp = {
                 "legacy-single": 1,
                 "sp2": 1,
                 "sp4": 1,
+                "sp8": 1,
                 "sp8tp4": 4,
             }[flux3_profile]
             requested_tp = os.getenv("FLUX3_TP_SIZE")
@@ -458,6 +476,17 @@ class Settings(BaseSettings):
             self.device_mesh_shape = profile_meshes[flux3_profile]
             self.is_galaxy = flux3_profile != "legacy-single"
             os.environ["FLUX3_PARALLELISM"] = flux3_profile
+            # Each TP1xSP8 worker opens an independent eight-chip Ring, but
+            # all four workers still share the Galaxy UMD/PCIe bring-up path.
+            # Starting their heavyweight warmups together has left the last
+            # Ring in an unreported device poll on real Galaxy hardware.
+            # Stagger by a full first-worker warmup unless deployment chooses
+            # an explicit policy through NEW_DEVICE_DELAY_SECONDS.
+            if flux3_profile == "sp8" and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
+                self.new_device_delay_seconds = 120
+                logger.info(
+                    "Applied FLUX.3 SP8 default worker-start delay: 120 seconds"
+                )
             logger.info(
                 f"Applied FLUX.3 execution profile {flux3_profile}: "
                 f"mesh={self.device_mesh_shape}, is_galaxy={self.is_galaxy}"
@@ -476,6 +505,16 @@ class Settings(BaseSettings):
             except ValueError as exc:
                 raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, or 4") from exc
             flux3_parallelism = os.getenv("FLUX3_PARALLELISM", "tp").strip().lower()
+            if flux3_parallelism == "sp8":
+                if tp_size != 1:
+                    raise ValueError("FLUX3_PARALLELISM=sp8 requires FLUX3_TP_SIZE=1")
+                # TP1 x SP8: one worker per physical eight-chip Galaxy tray.
+                self.device_mesh_shape = (8, 1)
+                self.is_galaxy = True
+                logger.info(
+                    "Applied FLUX.3 SP8 override: FLUX3_TP_SIZE=1, mesh=(8,1)"
+                )
+                return
             if flux3_parallelism == "sp8tp4":
                 if tp_size != 4:
                     raise ValueError("FLUX3_PARALLELISM=sp8tp4 requires FLUX3_TP_SIZE=4")
@@ -488,7 +527,9 @@ class Settings(BaseSettings):
                 )
                 return
             if flux3_parallelism not in {"tp", "sp"}:
-                raise ValueError("FLUX3_PARALLELISM must be 'tp', 'sp', or 'sp8tp4'")
+                raise ValueError(
+                    "FLUX3_PARALLELISM must be 'tp', 'sp', 'sp8', or 'sp8tp4'"
+                )
             # TP4 is pure tensor parallelism.  A physical 2x2 N300 group can
             # be exposed as either logical 1x4 (axis 1) or logical 4x1 (axis 0)
             # Ring mesh; choose explicitly so their CCL behaviour can be compared.

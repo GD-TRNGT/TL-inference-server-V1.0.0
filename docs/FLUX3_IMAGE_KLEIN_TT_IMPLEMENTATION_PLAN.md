@@ -279,3 +279,23 @@ docker image inspect tl-inference-server:flux-3-image-klein-eca825c5-6926f00a4 \
 | 2 卡性能优化下一阶段 | **待开始** | 先用 profiler 分离 Ring SDPA、matmul、VAE、host/device copy；再针对已证实热点研究 streaming FP32 destination、per-device chunks、matmul blocking、2D/H-sharded VAE |
 
 约束：当前 TP4 正式容器已停止以释放 Galaxy03 的芯片给 SP2；在 SP2 工作完成前不恢复。所有可运行候选都必须同时满足 L1 无溢出、服务回归、固定 seed 的 Golden/数值验收和至少超过测量噪声的性能收益，才允许进入提交候选。
+
+## 11. 2026-11-14：TP1×SP8（8 卡/worker）计划与进度
+
+目标是让一台 32 芯片 Galaxy 自动运行四个独立 8 卡 worker，而不是仅支持单个 32 卡 `SP8×TP4` job。每 worker 的目标 mesh 为 `(8,1)`，使用两个 Fabric links 的 Ring CCL，`TP=(1,1)`、`SP=(8,0)`。
+
+| 阶段 | 状态 | 内容 |
+| --- | --- | --- |
+| 物理分组 | **已实现并检查** | 基于 upstream `create_submeshes(MeshShape(8,1))` 的四个 column Ring；不使用连续 tray IDs。 |
+| 服务 profile | **已实现** | `sp8` profile、4 worker 自动发现、专用 mesh descriptor、runner parallel factors。 |
+| 4 worker 启动可靠性 | **已实现并真机验证** | scheduler 不再按 `Process.start()` 固定间隔启动；SP8 必须等待前一 Ring 发出真实 warmup ready，再等待 `NEW_DEVICE_DELAY_SECONDS`（默认 120 秒）后启动下一组。四组在正式无源码挂载镜像中全 ready。 |
+| Text encoder | **已实现** | 以 SP axis 的 weight-only TP8 加载 Qwen3-VL，输出后仍满足 DiT TP1×SP8 token 分区。 |
+| DiT projection | **已实现** | SP8 保留 Ring-SDPA；禁用 factor-one TP 轴的 fused MMRS projection。 |
+| SP8 分辨率范围 | **已实现** | `sp8` 固定服务 1024、2048。4096 的 `514×4096×256` VAE activation 约 1 GiB/芯片，无法与完整 resident DiT/Qwen3-VL 共存；请求会在 API runner 中被拒绝，4096 由 `sp8tp4`（32 卡）服务。 |
+| 4 worker full warmup | **已完成** | 正式镜像四组均 `is_ready=true`，仅在第 4 组 ready 后输出 `All workers ready`。 |
+| API 文件响应 | **已完成** | 4 个并发 1024×1024/16-step PNG 均 HTTP 200、有效 RGB PNG，且日志证实 4 个 Ring 各处理 1 个任务；HTTP 2.958–3.078 s。 |
+| SP8 不支持尺寸 | **已完成** | 4096×4096 在 Pydantic/API 层返回 422，不入队、不增加 worker error count；4096 保持 `sp8tp4`。 |
+| 正式镜像无 bind mount 回归 | **已完成** | `galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.4-sp8`，digest `sha256:a469…9b3d3`，仅挂载模型、缓存和 hugepages。 |
+| commit | **进行中** | 已完成 py_compile、scheduler 38 项及 request/auth 14 项测试、实机 API；待两仓库最终 diff check 后提交。 |
+
+风险边界：SP8 的首次 JIT/warmup 显著长于热态请求；不能把 `/health=200` 当作全部 worker 已完成。除新问题外，worker mesh 只能使用官方 column Ring，否则 collective 路由可能错误。

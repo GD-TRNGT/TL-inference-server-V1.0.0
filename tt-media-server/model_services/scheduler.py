@@ -28,6 +28,7 @@ from utils.simple_queue_factory import get_queue, get_task_queue
 
 WORKER_CLAIM_BARRIER_TIMEOUT_SECONDS = 1.0
 WORKER_TERMINATION_GRACE_PERIOD_SECONDS = 5.0
+FLUX3_SP8_WARMUP_TIMEOUT_SECONDS = 15 * 60
 
 
 class Scheduler:
@@ -192,18 +193,63 @@ class Scheduler:
             await asyncio.sleep(1.0)
 
     async def _start_workers_in_sequence(self):
-        """Start workers one by one with a delay to avoid overload"""
+        """Start workers sequentially, with a warmup barrier for FLUX.3 SP8.
+
+        Four independent eight-chip Rings share a Galaxy's UMD / PCIe bring-up
+        path. A fixed interval measured from ``Process.start()`` can launch a
+        subsequent Ring while the preceding one is still compiling or warming
+        the model. On real Galaxy systems this has left the final Ring polling
+        indefinitely. For TP1xSP8, wait for the preceding process to report
+        model warmup complete, then apply the configured settling delay.
+        """
+        wait_for_sp8_warmup = (
+            os.getenv("FLUX3_EXECUTION_PROFILE", "").strip().lower() == "sp8"
+        )
+        previous_worker_id = None
         while self.workers_to_open:
+            if previous_worker_id is not None and wait_for_sp8_warmup:
+                await self._wait_for_worker_ready(previous_worker_id)
+
+            worker_id = self.workers_to_open[0].lstrip("(").rstrip(")")
             self._start_worker()
             self.logger.info(
                 f"Worker started, remaining workers to open: {len(self.workers_to_open)}"
             )
 
-            # Add delay between worker starts to avoid resource contention
-            if self.workers_to_open:  # Only sleep if there are more workers to start
+            # Non-SP8 configurations retain the existing start-to-start
+            # spacing. SP8's spacing is intentionally applied after a
+            # predecessor's positive readiness signal in the helper above.
+            if self.workers_to_open and not wait_for_sp8_warmup:
                 await asyncio.sleep(self.settings.new_device_delay_seconds)
+            previous_worker_id = worker_id
 
         self.logger.info("All workers started in sequence")
+
+    async def _wait_for_worker_ready(self, worker_id: str) -> None:
+        """Wait for an SP8 predecessor to finish warmup before opening a Ring."""
+        deadline = time.monotonic() + FLUX3_SP8_WARMUP_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            worker = self.worker_info.get(worker_id)
+            if worker is not None:
+                if worker.get("is_ready", False):
+                    if self.settings.new_device_delay_seconds:
+                        self.logger.info(
+                            f"SP8 worker {worker_id} ready; waiting "
+                            f"{self.settings.new_device_delay_seconds}s before "
+                            "starting the next Ring"
+                        )
+                        await asyncio.sleep(self.settings.new_device_delay_seconds)
+                    return
+                process = worker.get("process")
+                if process is not None and not process.is_alive():
+                    raise RuntimeError(
+                        f"SP8 worker {worker_id} exited before completing warmup"
+                    )
+            await asyncio.sleep(1.0)
+        raise TimeoutError(
+            f"SP8 worker {worker_id} did not report ready within "
+            f"{FLUX3_SP8_WARMUP_TIMEOUT_SECONDS}s"
+        )
 
     def _start_worker(self, worker_id=None, queue_index=None):
         """Start a single worker process.
@@ -592,8 +638,9 @@ class Scheduler:
                     )
                     self._start_canary_monitor()
 
-                all_devices_ready = all(
-                    info["is_ready"] for info in self.worker_info.values()
+                all_devices_ready = (
+                    len(self.worker_info) == self.worker_count
+                    and all(info["is_ready"] for info in self.worker_info.values())
                 )
                 if all_devices_ready:
                     self.logger.info(

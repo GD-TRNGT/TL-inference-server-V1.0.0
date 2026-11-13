@@ -17,6 +17,7 @@ def flux3_runner(monkeypatch):
         "domain.image_generate_request.get_settings",
         lambda: SimpleNamespace(model_runner="tt-flux.3-image-klein"),
     )
+    monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "auto")
 
 
 @pytest.mark.parametrize("width,height", [(16, 16), (16, 4096), (4096, 4096)])
@@ -39,6 +40,25 @@ def test_flux3_rejects_geometry_outside_official_contract(
 ):
     with pytest.raises(ValidationError, match=reason):
         ImageGenerateRequest(prompt="a black bird", width=width, height=height)
+
+
+@pytest.mark.parametrize("width,height", [(4096, 4096), (1024, 2048)])
+def test_flux3_sp8_rejects_shapes_that_do_not_fit_resident_worker(
+    flux3_runner, monkeypatch, width, height
+):
+    monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "sp8")
+
+    with pytest.raises(ValidationError, match="SP8 serves only square"):
+        ImageGenerateRequest(prompt="a black bird", width=width, height=height)
+
+
+@pytest.mark.parametrize("size", [1024, 2048])
+def test_flux3_sp8_accepts_supported_square_sizes(flux3_runner, monkeypatch, size):
+    monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "sp8")
+
+    request = ImageGenerateRequest(prompt="a black bird", width=size, height=size)
+
+    assert (request.width, request.height) == (size, size)
 
 
 def test_openai_api_key_is_the_single_supported_deployment_variable(monkeypatch):

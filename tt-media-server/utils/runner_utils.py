@@ -132,8 +132,11 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         or (flux3_profile in {"", "auto"} and flux3_parallelism == "sp8tp4")
     )
     is_flux3_sequence_parallel = (
-        flux3_profile in {"sp2", "sp4", "sp-4", "sp8tp4", "sp8-tp4"}
-        or (flux3_profile in {"", "auto"} and flux3_parallelism in {"sp", "sp4", "sp8tp4"})
+        flux3_profile in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "sp8tp4", "sp8-tp4"}
+        or (
+            flux3_profile in {"", "auto"}
+            and flux3_parallelism in {"sp", "sp4", "sp8", "sp8tp4"}
+        )
     )
     if (
         settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
@@ -151,9 +154,41 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
     if is_flux3_sequence_parallel:
         explicit_descriptor = os.environ.get("TT_MESH_GRAPH_DESC_PATH")
         if explicit_descriptor:
+            is_flux3_sp8 = flux3_profile in {"sp8", "sp-8"} or (
+                flux3_profile in {"", "auto"} and flux3_parallelism == "sp8"
+            )
+            if is_flux3_sp8 and os.path.basename(explicit_descriptor) == (
+                "bh_galaxy_flux3_sp4_ring.textproto"
+            ):
+                # The v1.0.2 image carries this SP4 descriptor as its default.
+                # It describes a four-chip 2x2 group and is invalid for the
+                # eight-chip Ring. Replace it with the SP8 descriptor below.
+                os.environ.pop("TT_MESH_GRAPH_DESC_PATH", None)
+                TTLogger().info(
+                    "Removed inherited SP4 mesh descriptor for FLUX.3 SP8"
+                )
+            else:
+                TTLogger().info(
+                    "Keeping explicit FLUX.3 SP mesh descriptor: "
+                    f"{explicit_descriptor}"
+                )
+                return
+
+        is_flux3_sp8 = flux3_profile in {"sp8", "sp-8"} or (
+            flux3_profile in {"", "auto"} and flux3_parallelism == "sp8"
+        )
+        if is_flux3_sp8:
+            # TT_VISIBLE_DEVICES picks one of the four topology-local 8-chip
+            # Rings. This descriptor supplies its Ring dimension semantics;
+            # it deliberately contains no device IDs and is reusable for all
+            # four independent worker processes.
+            os.environ["TT_MESH_GRAPH_DESC_PATH"] = (
+                f"{tt_metal_home}/tt_metal/fabric/mesh_graph_descriptors/"
+                "bh_galaxy_flux3_sp8_ring.textproto"
+            )
             TTLogger().info(
-                "Keeping explicit FLUX.3 SP mesh descriptor: "
-                f"{explicit_descriptor}"
+                "Configured FLUX.3 SP8 Ring descriptor: "
+                f"{os.environ['TT_MESH_GRAPH_DESC_PATH']}"
             )
             return
 
@@ -183,10 +218,11 @@ def _setup_grid_override(device: str):
         flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
         flux3_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
         is_flux3_sequence_parallel = (
-            flux3_profile in {"sp2", "sp4", "sp-4", "sp8tp4", "sp8-tp4"}
+            flux3_profile
+            in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "sp8tp4", "sp8-tp4"}
             or (
                 flux3_profile in {"", "auto"}
-                and flux3_parallelism in {"sp", "sp4", "sp8tp4"}
+                and flux3_parallelism in {"sp", "sp4", "sp8", "sp8tp4"}
             )
         )
         if (

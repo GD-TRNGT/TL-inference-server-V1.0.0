@@ -127,6 +127,25 @@ class DeviceManager:
         logger.info("Device groups of 8: %s", groups)
         return groups
 
+    def get_flux3_sp8_groups(self) -> list[tuple[int, ...]]:
+        """Return the four physical 8-chip Rings used by FLUX.3 TP1xSP8.
+
+        A Galaxy's eight chips within one tray are *not* an 8-chip Ring.
+        The Ring follows one column of the 8x4 physical Galaxy topology and
+        therefore crosses two adjacent trays.  The order below is the one
+        emitted by TT-Metal's ``create_submeshes(MeshShape(8, 1))`` for the
+        Blackhole Galaxy topology and is also used by the upstream intragalaxy
+        4-rank 8x1 torus binding.
+        """
+        try:
+            tray_mapping = self._run_tt_smi()
+            groups = self._create_flux3_sp8_groups(tray_mapping)
+        except DeviceDiscoveryError as e:
+            logger.error("Galaxy FLUX.3 SP8 device discovery failed: %s", e)
+            return []
+        logger.info("FLUX.3 SP8 Ring groups: %s", groups)
+        return groups
+
     def get_device_groups_of_thirty_two(self) -> list[tuple[int, ...]]:
         """(4,8) mesh - verify and return the one complete 32-chip Galaxy."""
         try:
@@ -224,6 +243,31 @@ class DeviceManager:
                 )
             groups.append(tuple(ids[:N_PER_TRAY]))
         return groups
+
+    @staticmethod
+    def _create_flux3_sp8_groups(
+        tray_mapping: dict[int, list[int]],
+    ) -> list[tuple[int, ...]]:
+        """Map four full Galaxy trays to its four topology-local 8x1 Rings."""
+        trays = [sorted(tray_mapping[tray]) for tray in sorted(tray_mapping)]
+        if len(trays) != 4:
+            raise DeviceDiscoveryError(
+                "FLUX.3 SP8 requires one complete four-tray Galaxy; "
+                f"found {len(trays)} trays"
+            )
+        if any(len(ids) != N_PER_TRAY for ids in trays):
+            raise DeviceDiscoveryError(
+                "FLUX.3 SP8 requires exactly eight visible chips per tray; "
+                f"got {[len(ids) for ids in trays]}"
+            )
+
+        top_left, top_right, bottom_left, bottom_right = trays
+        return [
+            tuple(top_left[:4] + list(reversed(top_right[:4]))),
+            tuple(top_left[4:] + list(reversed(top_right[4:]))),
+            tuple(bottom_left[4:] + list(reversed(bottom_right[4:]))),
+            tuple(bottom_left[:4] + list(reversed(bottom_right[:4]))),
+        ]
 
     def _run_system_health(self) -> list[ChipInfo]:
         """Run test_system_health, return parsed chips. Raises DiscoveryError on failure."""

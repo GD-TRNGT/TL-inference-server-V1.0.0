@@ -534,6 +534,8 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "sp2": "sp2",
         "sp4": "sp4",
         "sp-4": "sp4",
+        "sp8": "sp8",
+        "sp-8": "sp8",
         "sp8tp4": "sp8tp4",
         "sp8-tp4": "sp8tp4",
     }
@@ -542,6 +544,7 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
             (1, 1): "legacy-single",
             (2, 1): "sp2",
             (4, 1): "sp4",
+            (8, 1): "sp8",
             (4, 8): "sp8tp4",
         }.get(normalized)
         return detected or "tp"
@@ -549,12 +552,13 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         profile = aliases[requested]
     except KeyError as exc:
         raise ValueError(
-            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, or sp8tp4"
+            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, sp8, or sp8tp4"
         ) from exc
     expected_mesh = {
         "legacy-single": (1, 1),
         "sp2": (2, 1),
         "sp4": (4, 1),
+        "sp8": (8, 1),
         "sp8tp4": (4, 8),
     }[profile]
     if normalized != expected_mesh:
@@ -568,7 +572,7 @@ def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
     """Return the supported FLUX.3 TP degree for one worker mesh."""
     normalized = tuple(mesh_shape)
     profile = _flux3_execution_profile(normalized)
-    if profile in {"legacy-single", "sp2", "sp4"}:
+    if profile in {"legacy-single", "sp2", "sp4", "sp8"}:
         return 1
     if profile == "sp8tp4":
         return 4
@@ -576,12 +580,19 @@ def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
         return 1
     # SP8 x TP4 uses axis 0 for tensor-parallel weights and axis 1 for
     # sequence-parallel image tokens.
-    degrees = {(1, 1): 1, (2, 1): 2, (1, 4): 4, (4, 1): 4, (4, 8): 4}
+    degrees = {
+        (1, 1): 1,
+        (2, 1): 2,
+        (1, 4): 4,
+        (4, 1): 4,
+        (8, 1): 1,
+        (4, 8): 4,
+    }
     try:
         return degrees[normalized]
     except KeyError as exc:
         raise ValueError(
-            "FLUX.3 supports only mesh shapes (1,1), (2,1), (1,4), (4,1), or (4,8); "
+            "FLUX.3 supports only mesh shapes (1,1), (2,1), (1,4), (4,1), (8,1), or (4,8); "
             f"got {normalized}"
         ) from exc
 
@@ -599,11 +610,21 @@ def _flux3_parallel_factors(
         return ((1, 1), (2, 0))
     if profile == "sp4":
         return ((1, 1), (4, 0))
+    if profile == "sp8":
+        return ((1, 1), (8, 0))
     if profile == "sp8tp4":
         return ((4, 0), (8, 1))
     parallelism = os.environ.get("FLUX3_PARALLELISM", "tp").strip().lower()
-    if parallelism not in {"tp", "sp", "sp8tp4"}:
-        raise ValueError("FLUX3_PARALLELISM must be 'tp', 'sp', or 'sp8tp4'")
+    if parallelism not in {"tp", "sp", "sp8", "sp8tp4"}:
+        raise ValueError(
+            "FLUX3_PARALLELISM must be 'tp', 'sp', 'sp8', or 'sp8tp4'"
+        )
+    if parallelism == "sp8":
+        if normalized == (8, 1):
+            return ((1, 1), (8, 0))
+        raise ValueError(
+            f"FLUX.3 SP8 requires an (8, 1) worker mesh; got {normalized}"
+        )
     if parallelism == "sp8tp4":
         if normalized == (4, 8):
             # Match upstream FLUX.3 Klein: TP4 on axis 0 and SP8 on axis 1.
@@ -671,12 +692,12 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         self._tp_degree = _flux3_tp_degree(self.settings.device_mesh_shape)
 
     def create_pipeline(self):
-        if self._execution_profile in {"sp2", "sp4", "sp8tp4"}:
+        if self._execution_profile in {"sp2", "sp4", "sp8", "sp8tp4"}:
             mesh_shape = tuple(self.ttnn_device.shape)
             if self._component_residency != "resident":
                 raise ValueError("The upstream FLUX.3 Klein path requires resident components")
             tp_factor, sp_factor = _flux3_parallel_factors(mesh_shape)
-            is_ring_mesh = mesh_shape in {(4, 1), (4, 8)}
+            is_ring_mesh = mesh_shape in {(4, 1), (8, 1), (4, 8)}
             topology = ttnn.Topology.Ring if is_ring_mesh else ttnn.Topology.Linear
             num_links = 2 if is_ring_mesh else 1
             weights_path = Path(_resolve_flux3_weights_path(self.settings.model_weights_path))
@@ -693,6 +714,10 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 topology=topology,
                 num_links=num_links,
                 upsample=False,
+                # An 8-chip SP worker keeps the full DiT/text stack resident.
+                # Its 4096 VAE activation is 1 GiB per chip and cannot coexist
+                # with those weights; SP8×TP4 remains the 4096 profile.
+                sizes=(1024, 2048) if self._execution_profile == "sp8" else (1024, 2048, 4096),
             )
         topology = (
             ttnn.Topology.Ring
@@ -771,11 +796,17 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         return pipeline
 
     async def warmup(self) -> bool:
-        if self._execution_profile not in {"sp2", "sp4", "sp8tp4"}:
+        if self._execution_profile not in {"sp2", "sp4", "sp8", "sp8tp4"}:
             return await super().warmup()
         self.pipeline = await asyncio.to_thread(self.create_pipeline)
         mesh_shape = tuple(self.ttnn_device.shape)
-        warmup_sizes = (1024,) if mesh_shape in {(2, 1), (4, 1)} else (1024, 2048, 4096)
+        warmup_sizes = (
+            (1024, 2048)
+            if mesh_shape == (8, 1)
+            else (1024,)
+            if mesh_shape in {(2, 1), (4, 1)}
+            else (1024, 2048, 4096)
+        )
         self.logger.info(
             f"Device {self.device_id}: warming {'/'.join(map(str, warmup_sizes))}"
         )
@@ -784,7 +815,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         return True
 
     def run(self, requests: list[ImageGenerateRequest]):
-        if self._execution_profile in {"sp2", "sp4", "sp8tp4"}:
+        if self._execution_profile in {"sp2", "sp4", "sp8", "sp8tp4"}:
             request = requests[0]
             if request.negative_prompt:
                 raise ValueError("The upstream FLUX.3 Klein API does not accept negative_prompt")
@@ -888,7 +919,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         return [result["image"]]
 
     def get_pipeline_device_params(self):
-        if self._execution_profile in {"sp2", "sp4", "sp8tp4"}:
+        if self._execution_profile in {"sp2", "sp4", "sp8", "sp8tp4"}:
             mesh_shape = tuple(self.settings.device_mesh_shape)
             if mesh_shape == (4, 8):
                 router_config = ttnn.FabricRouterConfig()
