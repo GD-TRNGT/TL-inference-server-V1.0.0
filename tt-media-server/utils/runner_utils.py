@@ -95,6 +95,9 @@ def setup_runner_environment(
         ModelRunners.TT_SDXL_TRACE.value,
         ModelRunners.TT_SDXL_EDIT.value,
         ModelRunners.TT_SDXL_IMAGE_TO_IMAGE.value,
+        # FLUX.3 SP workers require a physical 12x10 Blackhole grid.  This
+        # must run after mesh selection so the profile is already resolved.
+        ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value,
     }
     if settings.model_runner in _RUNNERS_REQUIRING_GRID_OVERRIDE:
         _setup_grid_override(settings.device)
@@ -177,8 +180,33 @@ def _setup_grid_override(device: str):
         device == DeviceTypes.BLACKHOLE_GALAXY.value
         or device == DeviceTypes.GALAXY.value
     ):
-        expected = "7,7" if device == DeviceTypes.GALAXY.value else "10,9"
-        os.environ["TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE"] = expected
-        _logger.info(
-            f"Set TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE={expected} for {device}"
+        flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
+        flux3_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
+        is_flux3_sequence_parallel = (
+            flux3_profile in {"sp2", "sp4", "sp-4", "sp8tp4", "sp8-tp4"}
+            or (
+                flux3_profile in {"", "auto"}
+                and flux3_parallelism in {"sp", "sp4", "sp8tp4"}
+            )
         )
+        if (
+            settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and is_flux3_sequence_parallel
+        ):
+            # TT-Metal encodes the maximum core coordinate.  ``11,9`` is
+            # therefore the full physical 12x10 Blackhole worker grid.
+            expected = "11,9"
+            effective_grid = "12x10"
+        else:
+            expected = "7,7" if device == DeviceTypes.GALAXY.value else "10,9"
+            effective_grid = None
+        os.environ["TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE"] = expected
+        if effective_grid:
+            _logger.info(
+                "Set FLUX.3 sequence-parallel core grid to "
+                f"{effective_grid} (TT coordinate override={expected})"
+            )
+        else:
+            _logger.info(
+                f"Set TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE={expected} for {device}"
+            )
