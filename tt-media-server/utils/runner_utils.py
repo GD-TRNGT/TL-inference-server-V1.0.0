@@ -145,6 +145,24 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
     elif not is_flux3_sequence_parallel:
         os.environ["TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE"] = "7,7"
 
+    # The versioned FLUX.3 image is layered on a prior SP4 image, so it can
+    # inherit an SP4 descriptor in its environment. An explicit non-SP
+    # profile (notably legacy-single) must never retain that descriptor:
+    # TT-Metal then tries to place a one-chip mesh using an SP4 PGD and fails
+    # before the runner can load. Replace it below with the shape-specific
+    # descriptor instead.
+    if (
+        settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+        and flux3_profile not in {"", "auto"}
+        and not is_flux3_sequence_parallel
+    ):
+        inherited_descriptor = os.environ.pop("TT_MESH_GRAPH_DESC_PATH", None)
+        if inherited_descriptor:
+            TTLogger().info(
+                "Removed inherited FLUX.3 sequence-parallel mesh descriptor "
+                f"for profile {flux3_profile}"
+            )
+
     # SP2 requires the explicit two-chip Galaxy descriptor mounted by the
     # deployment.  Do not replace it with the single-board N300 descriptor.
     if is_flux3_sequence_parallel:
