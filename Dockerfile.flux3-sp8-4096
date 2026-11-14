@@ -1,0 +1,8 @@
+# Persist the Galaxy03-tested FLUX.3 SP8 server source without rebuilding
+# tt-metal. The base carries the validated TT-Metal / SP8 Ring implementation;
+# this layer bakes the current API, runner, configuration and tests into it.
+FROM galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.4-sp8
+
+USER root
+COPY --chown=container_app_user:container_app_user tt-media-server/ /home/container_app_user/tt-metal/server/
+RUN chmod +x /home/container_app_user/tt-metal/server/run_uvicorn.sh
