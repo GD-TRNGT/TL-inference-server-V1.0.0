@@ -193,17 +193,18 @@ class Scheduler:
             await asyncio.sleep(1.0)
 
     async def _start_workers_in_sequence(self):
-        """Start workers sequentially, with a warmup barrier for FLUX.3 SP8.
+        """Start workers with a fixed start-to-start delay.
 
-        Four independent eight-chip Rings share a Galaxy's UMD / PCIe bring-up
-        path. A fixed interval measured from ``Process.start()`` can launch a
-        subsequent Ring while the preceding one is still compiling or warming
-        the model. On real Galaxy systems this has left the final Ring polling
-        indefinitely. For TP1xSP8, wait for the preceding process to report
-        model warmup complete, then apply the configured settling delay.
+        TP1xSP8 defaults to the same fixed-delay policy as the other Galaxy
+        profiles.  ``FLUX3_SP8_STARTUP_MODE=ready`` remains available when a
+        deployment needs the more conservative predecessor-ready barrier.
         """
+        sp8_startup_mode = os.getenv("FLUX3_SP8_STARTUP_MODE", "fixed").strip().lower()
+        if sp8_startup_mode not in {"fixed", "ready"}:
+            raise ValueError("FLUX3_SP8_STARTUP_MODE must be 'fixed' or 'ready'")
         wait_for_sp8_warmup = (
             os.getenv("FLUX3_EXECUTION_PROFILE", "").strip().lower() == "sp8"
+            and sp8_startup_mode == "ready"
         )
         previous_worker_id = None
         while self.workers_to_open:
@@ -216,9 +217,8 @@ class Scheduler:
                 f"Worker started, remaining workers to open: {len(self.workers_to_open)}"
             )
 
-            # Non-SP8 configurations retain the existing start-to-start
-            # spacing. SP8's spacing is intentionally applied after a
-            # predecessor's positive readiness signal in the helper above.
+            # Fixed mode uses the common start-to-start delay. Ready mode
+            # applies its delay in _wait_for_worker_ready instead.
             if self.workers_to_open and not wait_for_sp8_warmup:
                 await asyncio.sleep(self.settings.new_device_delay_seconds)
             previous_worker_id = worker_id

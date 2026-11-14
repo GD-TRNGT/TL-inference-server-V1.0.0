@@ -492,13 +492,13 @@ class Settings(BaseSettings):
             self.device_mesh_shape = profile_meshes[flux3_profile]
             self.is_galaxy = flux3_profile != "legacy-single"
             os.environ["FLUX3_PARALLELISM"] = flux3_profile
-            # Each TP1xSP8 worker opens an independent eight-chip Ring, but
-            # all four workers still share the Galaxy UMD/PCIe bring-up path.
-            # Starting their heavyweight warmups together has left the last
-            # Ring in an unreported device poll on real Galaxy hardware.
-            # Stagger by a full first-worker warmup unless deployment chooses
-            # an explicit policy through NEW_DEVICE_DELAY_SECONDS.
-            if flux3_profile in {"sp8", "tp2sp4", "tp4sp2"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
+            # Start the four TP1xSP8 Rings at a bounded, fixed interval.
+            # FLUX3_SP8_STARTUP_MODE=ready can opt into the predecessor-ready
+            # barrier for environments that need the conservative policy.
+            if flux3_profile == "sp8" and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
+                self.new_device_delay_seconds = 10
+                logger.info("Applied FLUX.3 SP8 fixed worker-start delay: 10 seconds")
+            elif flux3_profile in {"tp2sp4", "tp4sp2"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
                 self.new_device_delay_seconds = 120
                 logger.info(
                     "Applied FLUX.3 eight-chip default worker-start delay: 120 seconds"
