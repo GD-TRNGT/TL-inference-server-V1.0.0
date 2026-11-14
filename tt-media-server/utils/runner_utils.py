@@ -177,7 +177,10 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
                 flux3_profile in {"", "auto"} and flux3_parallelism == "sp8"
             )
             expected_descriptor = (
-                "bh_galaxy_flux3_sp8_ring.textproto"
+                "bh_galaxy_flux3_sp2_ring.textproto"
+                if flux3_profile in {"sp2", "sp-2"}
+                or (flux3_profile in {"", "auto"} and flux3_parallelism == "sp")
+                else "bh_galaxy_flux3_sp8_ring.textproto"
                 if is_flux3_sp8
                 else "bh_galaxy_flux3_tp2sp4_torus.textproto"
                 if is_flux3_tp2sp4
@@ -204,6 +207,21 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         is_flux3_sp8 = flux3_profile in {"sp8", "sp-8"} or (
             flux3_profile in {"", "auto"} and flux3_parallelism == "sp8"
         )
+        if flux3_profile in {"sp2", "sp-2"} or (
+            flux3_profile in {"", "auto"} and flux3_parallelism == "sp"
+        ):
+            # TT_VISIBLE_DEVICES selects one adjacent pair for each of the
+            # sixteen independent SP2 workers.
+            os.environ["TT_MESH_GRAPH_DESC_PATH"] = (
+                f"{tt_metal_home}/tt_metal/fabric/mesh_graph_descriptors/"
+                "bh_galaxy_flux3_sp2_ring.textproto"
+            )
+            TTLogger().info(
+                "Configured FLUX.3 SP2 Ring descriptor: "
+                f"{os.environ['TT_MESH_GRAPH_DESC_PATH']}"
+            )
+            return
+
         if is_flux3_sp8:
             # TT_VISIBLE_DEVICES picks one of the four topology-local 8-chip
             # Rings. This descriptor supplies its Ring dimension semantics;

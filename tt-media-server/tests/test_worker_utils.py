@@ -259,6 +259,19 @@ class TestSetupGalaxyMeshConfig:
                 )
                 assert os.environ["TT_MESH_GRAPH_DESC_PATH"] == expected_path
 
+    def test_sp2_uses_blackhole_ring_descriptor(self):
+        mock_settings_sp2 = Mock()
+        mock_settings_sp2.device_mesh_shape = (2, 1)
+        mock_settings_sp2.model_runner = "tt-flux.3-image-klein"
+
+        with patch.dict(os.environ, {"FLUX3_EXECUTION_PROFILE": "sp2"}, clear=True):
+            with patch("utils.runner_utils.settings", mock_settings_sp2):
+                _setup_galaxy_mesh_config("/opt/tt-metal")
+
+            assert os.environ["TT_MESH_GRAPH_DESC_PATH"].endswith(
+                "bh_galaxy_flux3_sp2_ring.textproto"
+            )
+
     def test_sets_t3k_mesh_descriptor(self):
         """Test mesh descriptor for (2, 4) device shape"""
         with patch.dict(os.environ, {}, clear=True):
