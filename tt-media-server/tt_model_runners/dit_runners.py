@@ -622,7 +622,7 @@ def _flux3_parallel_factors(
     normalized = tuple(mesh_shape)
     profile = _flux3_execution_profile(normalized)
     if profile == "legacy-single":
-        return ((1, 0), (1, 0))
+        return ((1, 1), (1, 0))
     if profile == "sp2":
         return ((1, 1), (2, 0))
     if profile == "sp4":

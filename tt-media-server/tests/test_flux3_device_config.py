@@ -19,6 +19,11 @@ def _legacy_runner_for_device_params():
     runner.settings = SimpleNamespace(device_mesh_shape=(1, 1))
     return runner
 
+def test_flux3_legacy_profile_uses_distinct_factor_one_axes(monkeypatch):
+    monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "legacy-single")
+    runner = _legacy_runner_for_device_params()
+    assert _flux3_parallel_factors((1, 1)) == ((1, 1), (1, 0))
+    assert runner._uses_klein_pipeline()
 
 def test_flux3_tp2sp4_profile_uses_2d_tensor_and_sequence_parallelism(monkeypatch):
     monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "tp2sp4")
