@@ -279,12 +279,10 @@ def _setup_grid_override(device: str):
                 and flux3_parallelism in {"sp", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
             )
         )
-        if (
-            settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and is_flux3_sequence_parallel
-        ):
+        if settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value:
             # TT-Metal encodes the maximum core coordinate.  ``11,9`` is
-            # therefore the full physical 12x10 Blackhole worker grid.
+            # therefore the full physical 12x10 Blackhole worker grid.  Keep
+            # this layout identical for TP1xSP1 and all SP/TP profiles.
             expected = "11,9"
             effective_grid = "12x10"
         else:
