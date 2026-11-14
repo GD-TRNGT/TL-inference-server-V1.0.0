@@ -441,6 +441,14 @@ class Settings(BaseSettings):
                 "sp-4": "sp4",
                 "sp8": "sp8",
                 "sp-8": "sp8",
+                "tp2sp4": "tp2sp4",
+                "tp2-sp4": "tp2sp4",
+                "sp4tp2": "tp2sp4",
+                "sp4-tp2": "tp2sp4",
+                "tp4sp2": "tp4sp2",
+                "tp4-sp2": "tp4sp2",
+                "sp2tp4": "tp4sp2",
+                "sp2-tp4": "tp4sp2",
                 "sp8tp4": "sp8tp4",
                 "sp8-tp4": "sp8tp4",
             }
@@ -448,7 +456,7 @@ class Settings(BaseSettings):
                 flux3_profile = aliases[flux3_profile]
             except KeyError as exc:
                 raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, sp8, or sp8tp4"
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, sp8, tp2sp4, tp4sp2, or sp8tp4"
                 ) from exc
             profile_meshes = {
                 "legacy-single": (1, 1),
@@ -458,6 +466,10 @@ class Settings(BaseSettings):
                 # One topology-local Galaxy tray per worker. Weights are
                 # replicated; image-token rows are split over its 8-chip Ring.
                 "sp8": (8, 1),
+                # One eight-chip tray: TP2 on axis 0 and SP4 on axis 1.
+                "tp2sp4": (2, 4),
+                # Transposed tray axes: TP4 on axis 0 and SP2 on axis 1.
+                "tp4sp2": (4, 2),
                 "sp8tp4": (4, 8),
             }
             expected_tp = {
@@ -465,6 +477,8 @@ class Settings(BaseSettings):
                 "sp2": 1,
                 "sp4": 1,
                 "sp8": 1,
+                "tp2sp4": 2,
+                "tp4sp2": 4,
                 "sp8tp4": 4,
             }[flux3_profile]
             requested_tp = os.getenv("FLUX3_TP_SIZE")
@@ -482,10 +496,10 @@ class Settings(BaseSettings):
             # Ring in an unreported device poll on real Galaxy hardware.
             # Stagger by a full first-worker warmup unless deployment chooses
             # an explicit policy through NEW_DEVICE_DELAY_SECONDS.
-            if flux3_profile == "sp8" and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
+            if flux3_profile in {"sp8", "tp2sp4", "tp4sp2"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
                 self.new_device_delay_seconds = 120
                 logger.info(
-                    "Applied FLUX.3 SP8 default worker-start delay: 120 seconds"
+                    "Applied FLUX.3 eight-chip default worker-start delay: 120 seconds"
                 )
             logger.info(
                 f"Applied FLUX.3 execution profile {flux3_profile}: "

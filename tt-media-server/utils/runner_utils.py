@@ -131,11 +131,19 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         flux3_profile in {"sp8tp4", "sp8-tp4"}
         or (flux3_profile in {"", "auto"} and flux3_parallelism == "sp8tp4")
     )
+    is_flux3_tp2sp4 = (
+        flux3_profile in {"tp2sp4", "tp2-sp4", "sp4tp2", "sp4-tp2"}
+        or (flux3_profile in {"", "auto"} and flux3_parallelism == "tp2sp4")
+    )
+    is_flux3_tp4sp2 = (
+        flux3_profile in {"tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4"}
+        or (flux3_profile in {"", "auto"} and flux3_parallelism == "tp4sp2")
+    )
     is_flux3_sequence_parallel = (
-        flux3_profile in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "sp8tp4", "sp8-tp4"}
+        flux3_profile in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "tp2sp4", "tp2-sp4", "sp4tp2", "sp4-tp2", "tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4", "sp8tp4", "sp8-tp4"}
         or (
             flux3_profile in {"", "auto"}
-            and flux3_parallelism in {"sp", "sp4", "sp8", "sp8tp4"}
+            and flux3_parallelism in {"sp", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
         )
     )
     if (
@@ -157,15 +165,23 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
             is_flux3_sp8 = flux3_profile in {"sp8", "sp-8"} or (
                 flux3_profile in {"", "auto"} and flux3_parallelism == "sp8"
             )
-            if is_flux3_sp8 and os.path.basename(explicit_descriptor) == (
-                "bh_galaxy_flux3_sp4_ring.textproto"
-            ):
-                # The v1.0.2 image carries this SP4 descriptor as its default.
-                # It describes a four-chip 2x2 group and is invalid for the
-                # eight-chip Ring. Replace it with the SP8 descriptor below.
+            expected_descriptor = (
+                "bh_galaxy_flux3_sp8_ring.textproto"
+                if is_flux3_sp8
+                else "bh_galaxy_flux3_tp2sp4_torus.textproto"
+                if is_flux3_tp2sp4
+                else "bh_galaxy_flux3_tp4sp2_mesh.textproto"
+                if is_flux3_tp4sp2
+                else None
+            )
+            if expected_descriptor and os.path.basename(explicit_descriptor) != expected_descriptor:
+                # Older images carry an SP4 or SP8 descriptor in their image
+                # environment. It is invalid for a different FLUX.3 eight-chip
+                # profile, so choose that profile's descriptor below instead.
                 os.environ.pop("TT_MESH_GRAPH_DESC_PATH", None)
                 TTLogger().info(
-                    "Removed inherited SP4 mesh descriptor for FLUX.3 SP8"
+                    "Removed inherited FLUX.3 mesh descriptor for "
+                    f"{expected_descriptor}"
                 )
             else:
                 TTLogger().info(
@@ -188,6 +204,33 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
             )
             TTLogger().info(
                 "Configured FLUX.3 SP8 Ring descriptor: "
+                f"{os.environ['TT_MESH_GRAPH_DESC_PATH']}"
+            )
+            return
+
+        if is_flux3_tp2sp4:
+            # One topology-local tray per worker. Axis 0 is the two-chip TP
+            # line and axis 1 is the four-chip SP line; TT_VISIBLE_DEVICES
+            # binds each of the four workers to a distinct tray.
+            os.environ["TT_MESH_GRAPH_DESC_PATH"] = (
+                f"{tt_metal_home}/tt_metal/fabric/mesh_graph_descriptors/"
+                "bh_galaxy_flux3_tp2sp4_torus.textproto"
+            )
+            TTLogger().info(
+                "Configured FLUX.3 TP2xSP4 2D mesh descriptor: "
+                f"{os.environ['TT_MESH_GRAPH_DESC_PATH']}"
+            )
+            return
+
+        if is_flux3_tp4sp2:
+            # Same physical 2x4 tray, transposed for a four-chip TP line and
+            # a two-chip SP line. The descriptor remains a non-wrapping mesh.
+            os.environ["TT_MESH_GRAPH_DESC_PATH"] = (
+                f"{tt_metal_home}/tt_metal/fabric/mesh_graph_descriptors/"
+                "bh_galaxy_flux3_tp4sp2_mesh.textproto"
+            )
+            TTLogger().info(
+                "Configured FLUX.3 TP4xSP2 2D mesh descriptor: "
                 f"{os.environ['TT_MESH_GRAPH_DESC_PATH']}"
             )
             return
@@ -219,10 +262,10 @@ def _setup_grid_override(device: str):
         flux3_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
         is_flux3_sequence_parallel = (
             flux3_profile
-            in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "sp8tp4", "sp8-tp4"}
+            in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "tp2sp4", "tp2-sp4", "sp4tp2", "sp4-tp2", "tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4", "sp8tp4", "sp8-tp4"}
             or (
                 flux3_profile in {"", "auto"}
-                and flux3_parallelism in {"sp", "sp4", "sp8", "sp8tp4"}
+                and flux3_parallelism in {"sp", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
             )
         )
         if (

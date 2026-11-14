@@ -6,7 +6,6 @@ import base64
 import binascii
 import io
 import math
-import os
 import warnings
 from typing import List, Literal, Optional, Tuple, Union
 
@@ -104,19 +103,6 @@ class BaseImageRequest(BaseRequest):
                     "FLUX.3 width and height must be multiples of "
                     f"{_FLUX3_SHAPE_MULTIPLE}; got {self.width}x{self.height}"
                 )
-            # A TP1xSP8 worker keeps the complete DiT and Qwen3-VL stacks
-            # resident on each of eight chips. Its VAE cannot safely retain
-            # the 4096 activation alongside those weights, so reject that
-            # profile-specific shape at the API boundary rather than enqueue
-            # work that would fail in a device worker and be surfaced as 500.
-            if os.getenv("FLUX3_EXECUTION_PROFILE", "").strip().lower() == "sp8":
-                served_sizes = (1024, 2048)
-                if self.width != self.height or self.width not in served_sizes:
-                    raise ValueError(
-                        "FLUX.3 SP8 serves only square 1024x1024 or 2048x2048 "
-                        f"requests; got {self.width}x{self.height}. "
-                        "Use the sp8tp4 profile for 4096x4096."
-                    )
         return self
 
     @model_validator(mode="after")

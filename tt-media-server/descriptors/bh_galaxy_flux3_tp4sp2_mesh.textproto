@@ -1,0 +1,15 @@
+# One independent FLUX.3 Klein TP4xSP2 worker on a Blackhole Galaxy tray.
+#
+# TT_VISIBLE_DEVICES selects one physical eight-chip tray. Axis 0 is the
+# four-chip tensor-parallel line and axis 1 the two-chip sequence-parallel
+# line. A tray is physically a non-wrapping 2x4 mesh, so this descriptor must
+# not declare torus wrap-around links.
+mesh_descriptors {
+  name: "M0"
+  arch: BLACKHOLE
+  device_topology { dims: [ 4, 2 ] dim_types: [ LINE, LINE ] }
+  host_topology { dims: [ 1, 1 ] }
+  channels { count: 2 policy: STRICT }
+}
+
+top_level_instance { mesh { mesh_descriptor: "M0" mesh_id: 0 } }

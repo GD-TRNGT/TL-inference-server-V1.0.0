@@ -37,6 +37,11 @@ _TT_METAL_MODULES = (
     "models.tt_dit.pipelines.flux1",
     "models.tt_dit.pipelines.flux1.pipeline_flux1",
     "models.tt_dit.pipelines.flux1.pipeline_flux1_kontext",
+    "models.tt_dit.pipelines.flux3",
+    "models.tt_dit.pipelines.flux3.pipeline_flux3",
+    "models.tt_dit.pipelines.flux3.t2i_contract",
+    "models.tt_dit.pipelines.flux3_klein",
+    "models.tt_dit.pipelines.flux3_klein.pipeline_flux3_klein",
     "models.tt_dit.pipelines.minimax_h3",
     "models.tt_dit.pipelines.minimax_h3.pipeline_minimax_h3",
     "models.tt_dit.pipelines.mochi",
@@ -50,6 +55,9 @@ _TT_METAL_MODULES = (
     "models.tt_dit.pipelines.wan",
     "models.tt_dit.pipelines.wan.pipeline_wan",
     "models.tt_dit.pipelines.wan.pipeline_wan_i2v",
+    "models.tt_dit.parallel",
+    "models.tt_dit.parallel.config",
+    "models.tt_dit.parallel.manager",
 )
 
 

@@ -1,0 +1,16 @@
+# One independent FLUX.3 Klein TP2xSP4 worker on a Blackhole Galaxy tray.
+#
+# TT_VISIBLE_DEVICES selects the eight chips belonging to one physical tray.
+# Axis 0 (size 2) is used for tensor-parallel weights and axis 1 (size 4) for
+# sequence-parallel image-token rows. A Galaxy tray is physically a 2x4 grid,
+# not a 2D torus: declaring wrap-around links prevents PGD placement. The
+# pipeline may still select its collective algorithm independently.
+mesh_descriptors {
+  name: "M0"
+  arch: BLACKHOLE
+  device_topology { dims: [ 2, 4 ] dim_types: [ LINE, LINE ] }
+  host_topology { dims: [ 1, 1 ] }
+  channels { count: 2 policy: STRICT }
+}
+
+top_level_instance { mesh { mesh_descriptor: "M0" mesh_id: 0 } }
