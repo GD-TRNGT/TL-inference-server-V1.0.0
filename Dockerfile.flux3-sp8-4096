@@ -1,8 +1,12 @@
-# Persist the Galaxy03-tested FLUX.3 SP8 server source without rebuilding
-# tt-metal. The base carries the validated TT-Metal / SP8 Ring implementation;
-# this layer bakes the current API, runner, configuration and tests into it.
+# Persist the Galaxy03-tested FLUX.3 service plus the exact TT-Metal VAE
+# schedule source. The base carries the validated TT-Metal / SP8 Ring runtime;
+# the named local build context bakes the versioned decoder implementation, so
+# the resulting image does not need a source bind mount at runtime.
 FROM galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.4-sp8
 
 USER root
 COPY --chown=container_app_user:container_app_user tt-media-server/ /home/container_app_user/tt-metal/server/
+COPY --from=tt-metal-local --chown=container_app_user:container_app_user \
+    models/tt_dit/pipelines/flux3_klein/vae_flux3_klein.py \
+    /home/container_app_user/tt-metal/models/tt_dit/pipelines/flux3_klein/vae_flux3_klein.py
 RUN chmod +x /home/container_app_user/tt-metal/server/run_uvicorn.sh

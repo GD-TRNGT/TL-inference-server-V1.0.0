@@ -1,6 +1,6 @@
 # FLUX.3 Image Klein 在 TT-Metal / TL-inference-server 上的完整适配记录
 
-更新时间：2026-11-13
+更新时间：2026-11-14
 
 ## 1. 当前结论
 
@@ -1888,3 +1888,8 @@ Galaxy03 经 `tt-smi -glx_list_tray_to_device` 发现的 tray 顺序为 `0..7`�
 随后向端口 `18130` 并发发送 4 个 `a black bird`、`1024×1024`、16-step、`response_format=file`、PNG 请求，四个 Ring 各处理一个任务。HTTP 总时间为 `3.028`、`3.078`、`2.992`、`2.958` 秒；4/4 返回有效 1024×1024 RGB PNG。设备端 `denoise` 为 `1.845–1.861 s`，VAE decode 为 `0.634–0.668 s`。图片保存在 `/local/lnn/fluxcache/sp8-formal-v104-20261113/black_bird_sp8_formal_seed{52..55}.png`。
 
 对 `4096×4096` 请求，API 在调度前返回 HTTP 422：`FLUX.3 SP8 serves only square 1024x1024 or 2048x2048 ... Use the sp8tp4 profile for 4096x4096.`；日志没有 worker 执行任务或 error count 增长。这证实容量边界已在 API 层生效。
+
+
+### 35. 2026-11-14：SP8 4096 VAE decoder 调度固化
+
+`sp8` 的 4096 API 上限已按官方模型边界持久化为单边 `16–4096`、16 像素对齐；不再保留早期“SP8 仅 1024/2048”的输入限制。对 Galaxy03 TP1×SP8 Ring 的完整 warmup 后 4096×4096、Distilled、16-step 请求，VAE decoder 从历史的 `act_block_h=32, double_buffer=false` 调整为 `64, true`。对 SP8 中不合法的 Conv2d shape，TTNN 会自动回退为 32-row block；正式请求的 VAE decode 从 `3.541s` 降至 `3.054s`（约 13.7%），PNG SHA256 保持完全一致。H1/H2/H4 profile 同样使用 `64, true`，所以所有 1/2/4/8 卡 worker 都启用 double buffer。详细测试、约束和覆盖接口见 `FLUX3_SP8_VAE_SCHEDULING.md`。
