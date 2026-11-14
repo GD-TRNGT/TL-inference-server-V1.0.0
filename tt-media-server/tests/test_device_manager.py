@@ -175,12 +175,13 @@ Mapping of trays to devices on the galaxy:
         )
 
         with (
-            patch.object(DeviceManager, "_get_local_groups_from_tt_smi", return_value=[]),
+            patch.object(DeviceManager, "_get_local_groups_from_tt_smi") as fallback,
             patch("utils.device_manager.logger") as mock_logger,
         ):
             result = self.device_manager.get_device_pairs()
             self.assertEqual(result, [])
-            mock_logger.warning.assert_called()
+            mock_logger.error.assert_called()
+        fallback.assert_not_called()
 
     def test_create_device_groups_of_eight_valid_input(self):
         """Test creating device groups of 8 from valid tray mapping"""

@@ -61,6 +61,7 @@ docker image inspect galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.3-
 
 不要设置 `FLUX3_DEVICE_IDS`。从当前版本开始，FLUX.3 服务会拒绝该变量：Galaxy 的子网格必须由物理 Fabric 拓扑决定，不能用连续的 PCIe 编号手工拼接。服务只根据 `FLUX3_EXECUTION_PROFILE` 自动发现并拆分 Galaxy 的 32 张芯片；每个 worker 只打开其拓扑合法的芯片组。
 
+SP2 与 SP4 都只接受 `test_system_health` 返回的物理 Fabric 分组；该工具不可用或失败时服务会拒绝启动相应的多卡 worker，而不会按 PCIe 编号猜测拓扑。
 | `FLUX3_EXECUTION_PROFILE` | 每 worker 芯片数 | 自动创建的 worker 数 | 并行方式 |
 | --- | ---: | ---: | --- |
 | `legacy-single` | 1 | 32 | 独立单卡推理 |

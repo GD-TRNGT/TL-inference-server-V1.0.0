@@ -71,25 +71,24 @@ class DeviceManager:
         return devices
 
     def get_device_pairs(self) -> list[tuple[int, int]]:
-        """(2,1) Galaxy - N1-N2, N3-N4 pairs via test_system_health. Returns [] on failure."""
+        """Return Fabric-valid two-chip Galaxy links from health topology.
+
+        SP2 uses the physical N1-N2, N3-N4, N5-N6, and N7-N8 links reported
+        by ``test_system_health``. Do not infer those links from PCIe numbering:
+        topology discovery is required before starting a multi-chip worker.
+        """
         try:
             chips = self._run_system_health()
             pairs = self._build_pairs_from_chips(chips)
             logger.info("Device pairs: %s", pairs)
             return pairs
         except DeviceDiscoveryError as e:
-            logger.warning(
-                "Galaxy TP2 health discovery failed: %s; falling back to tt-smi", e
+            logger.error(
+                "Galaxy TP2 health discovery failed; refusing unsafe PCIe-ID "
+                "fallback: %s",
+                e,
             )
-            try:
-                return self._get_local_groups_from_tt_smi(2)
-            except DeviceDiscoveryError as fallback_error:
-                logger.error(
-                    "Galaxy TP2 device discovery failed: health=%s; tt-smi=%s",
-                    e,
-                    fallback_error,
-                )
-                return []
+            return []
 
     def get_device_groups_of_four(self) -> list[tuple[int, int, int, int]]:
         """Return Fabric-valid four-chip Galaxy groups from health topology.
