@@ -717,7 +717,11 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         self._tp_degree = _flux3_tp_degree(self.settings.device_mesh_shape)
 
     def _uses_klein_pipeline(self) -> bool:
-        return self._execution_profile in {"legacy-single", "sp2", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
+        # TP1xSP1 uses the established FLUX3 T2I path. The Klein pipeline
+        # buckets text to 1024 rows for ring SDPA; that padding requires SP
+        # masking and is not valid for its non-SP attention branch. The
+        # legacy path supplies matching non-SP masking and image references.
+        return self._execution_profile in {"sp2", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
 
     def create_pipeline(self):
         if self._uses_klein_pipeline():

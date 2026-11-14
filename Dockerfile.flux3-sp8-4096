@@ -1,7 +1,13 @@
-# Persist the Galaxy03-tested FLUX.3 media service on the validated v1.0.6 TT-Metal runtime.
-# This image versions the server layer without copying an uncommitted TT-Metal worktree.
+# Build with:
+# docker build --build-context ttmetal=/local/lnn/tt-metal \
+#   -f Dockerfile.flux3-sp8-4096 -t <tag> .
+#
+# The runtime libraries remain in the validated v1.0.6 base image.  Overlay
+# the checked-in tt_dit Python source so the legacy single-card path and the
+# Klein multi-chip path use the same versioned TT-Metal implementation.
 FROM galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.6
 
 USER root
 COPY --chown=container_app_user:container_app_user tt-media-server/ /home/container_app_user/tt-metal/server/
+COPY --from=ttmetal --chown=container_app_user:container_app_user models/tt_dit/ /home/container_app_user/tt-metal/models/tt_dit/
 RUN chmod +x /home/container_app_user/tt-metal/server/run_uvicorn.sh
