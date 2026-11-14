@@ -174,10 +174,13 @@ Mapping of trays to devices on the galaxy:
             "test_system_health failed"
         )
 
-        with patch("utils.device_manager.logger") as mock_logger:
+        with (
+            patch.object(DeviceManager, "_get_local_groups_from_tt_smi", return_value=[]),
+            patch("utils.device_manager.logger") as mock_logger,
+        ):
             result = self.device_manager.get_device_pairs()
             self.assertEqual(result, [])
-            mock_logger.error.assert_called()
+            mock_logger.warning.assert_called()
 
     def test_create_device_groups_of_eight_valid_input(self):
         """Test creating device groups of 8 from valid tray mapping"""
@@ -255,6 +258,15 @@ Mapping of trays to devices on the galaxy:
         result = self.device_manager._create_device_groups_of_eight(exact_tray_mapping)
         expected = [(0, 1, 2, 3, 4, 5, 6, 7)]
         self.assertEqual(result, expected)
+
+    def test_get_device_groups_of_four_failure_never_uses_pcie_id_fallback(self):
+        """SP4 must fail closed instead of constructing sequential PCIe groups."""
+        with patch.object(DeviceManager, "_run_system_health", side_effect=DeviceDiscoveryError("no topology")), patch.object(DeviceManager, "_get_local_groups_from_tt_smi") as fallback:
+            result = self.device_manager.get_device_groups_of_four()
+        self.assertEqual(result, [])
+        fallback.assert_not_called()
+
+
 
     @patch.object(DeviceManager, "_run_tt_smi")
     def test_get_device_groups_of_eight_success(self, mock_run_tt_smi):

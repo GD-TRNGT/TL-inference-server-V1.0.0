@@ -92,25 +92,25 @@ class DeviceManager:
                 return []
 
     def get_device_groups_of_four(self) -> list[tuple[int, int, int, int]]:
-        """(4,1) Galaxy TP4 groups: N1-N4 and N5-N8 within every tray."""
+        """Return Fabric-valid four-chip Galaxy groups from health topology.
+
+        Unlike a two-chip local link, a four-chip FLUX.3 SP4 worker must use
+        the physical 2x2 N300 placement reported by ``test_system_health``.
+        Do not fall back to consecutive PCIe IDs: that can create an
+        unembeddable Fabric descriptor and fail only after device bring-up.
+        """
         try:
             chips = self._run_system_health()
             groups = self._build_groups_of_four_from_chips(chips)
             logger.info("Device groups of four: %s", groups)
             return groups
         except DeviceDiscoveryError as e:
-            logger.warning(
-                "Galaxy TP4 health discovery failed: %s; falling back to tt-smi", e
+            logger.error(
+                "Galaxy TP4 health discovery failed; refusing unsafe PCIe-ID "
+                "fallback: %s",
+                e,
             )
-            try:
-                return self._get_local_groups_from_tt_smi(4)
-            except DeviceDiscoveryError as fallback_error:
-                logger.error(
-                    "Galaxy TP4 device discovery failed: health=%s; tt-smi=%s",
-                    e,
-                    fallback_error,
-                )
-                return []
+            return []
 
     def get_device_groups_of_eight(self) -> list[tuple[int, ...]]:
         """(2,4) mesh - groups of 8 via tt-smi. Returns [] on failure."""

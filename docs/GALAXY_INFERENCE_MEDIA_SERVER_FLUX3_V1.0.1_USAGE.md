@@ -59,7 +59,7 @@ docker image inspect galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.3-
 
 ## 4. Galaxy：自动 worker 拓扑
 
-正常部署**不要**设置 `FLUX3_DEVICE_IDS`。服务会基于 `FLUX3_EXECUTION_PROFILE` 自动发现并拆分 Galaxy 的 32 张芯片；每个 worker 只打开自己的芯片组。
+不要设置 `FLUX3_DEVICE_IDS`。从当前版本开始，FLUX.3 服务会拒绝该变量：Galaxy 的子网格必须由物理 Fabric 拓扑决定，不能用连续的 PCIe 编号手工拼接。服务只根据 `FLUX3_EXECUTION_PROFILE` 自动发现并拆分 Galaxy 的 32 张芯片；每个 worker 只打开其拓扑合法的芯片组。
 
 | `FLUX3_EXECUTION_PROFILE` | 每 worker 芯片数 | 自动创建的 worker 数 | 并行方式 |
 | --- | ---: | ---: | --- |
@@ -69,11 +69,11 @@ docker image inspect galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.3-
 | `sp8` | 8 | 4 | TP1 × SP8 Ring |
 | `sp8tp4` | 32 | 1 | SP8 × TP4 |
 
-`legacy-single` 因而并不是“只启动一个单卡 worker”：默认会创建 **32 个单卡 worker**。如需只为调试启动 chip 0 的一个 worker，可额外设置 `FLUX3_DEVICE_IDS='(0)'`；这会关闭自动拆分，不可用于完整 Galaxy 吞吐部署。
+`legacy-single` 因而并不是“只启动一个单卡 worker”：默认会创建 **32 个单卡 worker**。如需只验证一张卡，应在隔离的单卡机器或测试环境中运行；不要通过手工设备列表改变 Galaxy 服务的 worker 拓扑。
 
 所有 profile 均保持以下运行约束：`TT_MM_THROTTLE_PERF=0`、`TT_METAL_TDP_LIMIT_WATTS=160`、`FLUX3_CORE_GRID_OVERRIDE=12x10`。profile 自行确定 mesh 和 TP/SP 轴，因此无需再设置 `FLUX3_PARALLELISM` 或 `FLUX3_TP_SIZE`。
 
-`sp8` 不是将每个 tray 的连续 8 张卡直接作为一个 worker。Galaxy 的有效 8 卡 Ring 是跨相邻两个 tray 的 column 子网格；服务依据 TT-Metal upstream 的 `create_submeshes(MeshShape(8,1))` 顺序自动发现四组 Ring：`(0,1,2,3,11,10,9,8)`、`(4,5,6,7,15,14,13,12)`、`(28,29,30,31,23,22,21,20)`、`(24,25,26,27,19,18,17,16)`。不要手动覆写 `FLUX3_DEVICE_IDS`，否则会绕过该安全映射。
+`sp8` 不是将每个 tray 的连续 8 张卡直接作为一个 worker。Galaxy 的有效 8 卡 Ring 是跨相邻两个 tray 的 column 子网格；服务依据 TT-Metal upstream 的 `create_submeshes(MeshShape(8,1))` 顺序自动发现四组 Ring：`(0,1,2,3,11,10,9,8)`、`(4,5,6,7,15,14,13,12)`、`(28,29,30,31,23,22,21,20)`、`(24,25,26,27,19,18,17,16)`。服务不接受手工 `FLUX3_DEVICE_IDS`，因此不能绕过该安全映射。
 
 ## 5. Galaxy02：SP4×8（8 个四卡 worker）启动
 

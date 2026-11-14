@@ -304,17 +304,19 @@ class Settings(BaseSettings):
         if not self.is_galaxy:
             return
 
-        # Restrict a FLUX.3 Galaxy deployment to explicit worker groups when
-        # bringing up or validating a parallel path.  Normal deployments keep
-        # automatic topology-aware discovery and are unchanged when unset.
+        # A Galaxy submesh is defined by its physical Fabric placement, not
+        # by consecutive PCIe IDs.  In particular, a seemingly plausible
+        # four-chip list such as (0,1,2,3) is not an SP4 submesh and TT-Metal
+        # correctly rejects it while placing the descriptor.  Keep worker
+        # selection entirely topology-driven; FLUX3_DEVICE_IDS used to bypass
+        # this protection and must not be accepted by the public service.
         flux3_device_ids = os.getenv("FLUX3_DEVICE_IDS")
         if self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value and flux3_device_ids:
-            self.device_ids = flux3_device_ids
-            logger.info(
-                "Using explicit FLUX.3 worker device IDs: "
-                f"{self.device_ids!r}"
+            raise ValueError(
+                "FLUX3_DEVICE_IDS is not supported for FLUX.3 Image Klein. "
+                "Set FLUX3_EXECUTION_PROFILE only; the service discovers "
+                "Fabric-valid Galaxy worker groups automatically."
             )
-            return
 
         dm = DeviceManager()
         devices = []

@@ -34,25 +34,13 @@ def setup_runner_environment(
     )
     setup_cpu_threading_limits(cpu_threads, num_torch_threads)
 
-    flux3_sp4_auto_worker = (
-        settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-        and os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
-        in {"sp4", "sp-4"}
-        and device_id == "sp4-auto"
-    )
-    if flux3_sp4_auto_worker:
-        # A four-chip Galaxy Ring is selected by the fabric topology. Exporting
-        # four visible device IDs here would hide that topology from the solver.
-        os.environ.pop("TT_VISIBLE_DEVICES", None)
-        _logger.info("setup_runner_environment: SP4 uses topology-selected Galaxy chips")
-    elif device_id:
+    if device_id:
         os.environ["TT_VISIBLE_DEVICES"] = str(device_id)
         _logger.info(f"setup_runner_environment: TT_VISIBLE_DEVICES={device_id}")
 
     if (
         device_id
         and device_id != "-1"
-        and not flux3_sp4_auto_worker
         and settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
     ):
         cache_root = os.environ.get("FLUX3_TT_METAL_CACHE_ROOT")

@@ -1777,7 +1777,7 @@ TT-Metal 的 `transformer_flux3.py:Flux3Transformer.forward()` 增加可选 `joi
 
 - `FLUX3_TP_SIZE=2`
 - `FLUX3_PARALLELISM=sp`
-- `FLUX3_DEVICE_IDS=(0,1)`
+- `FLUX3_EXECUTION_PROFILE=sp2`（设备组由 Galaxy 拓扑自动发现；不支持手工设置 `FLUX3_DEVICE_IDS`）
 - `TT_MESH_GRAPH_DESC_PATH=/tmp/bh_2_1_line_line.textproto`
 - `TT_MM_THROTTLE_PERF=0`、`TT_METAL_TDP_LIMIT_WATTS=160`
 
