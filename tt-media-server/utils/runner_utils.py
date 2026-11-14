@@ -70,7 +70,12 @@ def setup_runner_environment(
         ModelRunners.TRAINER_TRAINING_LORA.value,
     }
     if settings.model_runner in _RUNNERS_REQUIRING_MESH_DESCRIPTOR:
-        if settings.is_galaxy:
+        is_flux3_galaxy_worker = (
+            settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and (settings.device or "").lower()
+            == DeviceTypes.BLACKHOLE_GALAXY.value
+        )
+        if settings.is_galaxy or is_flux3_galaxy_worker:
             _logger.info("setup_runner_environment: applying galaxy mesh config")
             _setup_galaxy_mesh_config(tt_metal_home)
         elif (settings.device or "").lower() in _BH_DEVICE_MESH_DESCRIPTORS:
