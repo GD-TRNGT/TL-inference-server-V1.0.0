@@ -716,8 +716,11 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         self._klein_model = model_hint
         self._tp_degree = _flux3_tp_degree(self.settings.device_mesh_shape)
 
+    def _uses_klein_pipeline(self) -> bool:
+        return self._execution_profile in {"legacy-single", "sp2", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
+
     def create_pipeline(self):
-        if self._execution_profile in {"sp2", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}:
+        if self._uses_klein_pipeline():
             mesh_shape = tuple(self.ttnn_device.shape)
             if self._component_residency != "resident":
                 raise ValueError("The upstream FLUX.3 Klein path requires resident components")
@@ -836,7 +839,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         return pipeline
 
     async def warmup(self) -> bool:
-        if self._execution_profile not in {"sp2", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}:
+        if not self._uses_klein_pipeline():
             return await super().warmup()
         self.pipeline = await asyncio.to_thread(self.create_pipeline)
         mesh_shape = tuple(self.ttnn_device.shape)
@@ -865,7 +868,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         return True
 
     def run(self, requests: list[ImageGenerateRequest]):
-        if self._execution_profile in {"sp2", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}:
+        if self._uses_klein_pipeline():
             request = requests[0]
             if request.negative_prompt:
                 raise ValueError("The upstream FLUX.3 Klein API does not accept negative_prompt")
@@ -876,8 +879,6 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 raise ValueError("provide only one of reference_images, reference_image, or image")
             if reference_payload is not None or legacy_image_payload is not None:
                 reference_payloads = [reference_payload if reference_payload is not None else legacy_image_payload]
-            if reference_payloads and len(reference_payloads) > 1:
-                raise ValueError("The upstream SP path currently supports one reference image")
             images = tuple(
                 self._image_manager.base64_to_pil_image(payload, target_mode="RGB")
                 for payload in (reference_payloads or ())
@@ -969,8 +970,13 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         return [result["image"]]
 
     def get_pipeline_device_params(self):
-        if self._execution_profile in {"sp2", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}:
+        if self._uses_klein_pipeline():
             mesh_shape = tuple(self.settings.device_mesh_shape)
+            if mesh_shape == (1, 1):
+                return {
+                    "l1_small_size": int(os.environ.get("FLUX3_L1_SMALL_SIZE", "131072")),
+                    "fabric_config": ttnn.FabricConfig.DISABLED,
+                }
             if self._execution_profile in {"tp2sp4", "tp4sp2"}:
                 return {
                     "l1_small_size": int(os.environ.get("FLUX3_L1_SMALL_SIZE", "131072")),
