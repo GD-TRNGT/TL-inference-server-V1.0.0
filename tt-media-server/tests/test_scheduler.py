@@ -1048,6 +1048,31 @@ class TestSchedulerMultihost:
         worker["process"].kill.assert_called_once()
         os_exit.assert_called_once_with(1)
 
+    @pytest.mark.asyncio
+    async def test_legacy_single_bootstraps_cache_before_remaining_workers(
+        self, scheduler, monkeypatch
+    ):
+        scheduler.workers_to_open = ["(0)", "(1)", "(2)"]
+        scheduler.settings.new_device_delay_seconds = 0
+        started = []
+
+        def start_worker():
+            worker_id = scheduler.workers_to_open.pop(0).strip("()")
+            scheduler.worker_info[worker_id] = {"is_ready": True}
+            started.append(worker_id)
+
+        monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "legacy-single")
+        monkeypatch.delenv("FLUX3_LEGACY_STARTUP_MODE", raising=False)
+        with patch.object(
+            scheduler, "_start_worker", side_effect=start_worker
+        ), patch.object(
+            scheduler, "_wait_for_worker_ready", new_callable=AsyncMock
+        ) as wait_for_ready:
+            await scheduler._start_workers_in_sequence()
+
+        assert started == ["0", "1", "2"]
+        wait_for_ready.assert_awaited_once_with("0", profile="legacy-single")
+
 
 if __name__ == "__main__":
     pytest.main([__file__])

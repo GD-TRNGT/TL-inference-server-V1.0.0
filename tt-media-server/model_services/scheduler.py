@@ -28,6 +28,7 @@ from utils.simple_queue_factory import get_queue, get_task_queue
 
 WORKER_CLAIM_BARRIER_TIMEOUT_SECONDS = 1.0
 WORKER_TERMINATION_GRACE_PERIOD_SECONDS = 5.0
+FLUX3_LEGACY_WARMUP_TIMEOUT_SECONDS = 20 * 60
 FLUX3_SP8_WARMUP_TIMEOUT_SECONDS = 15 * 60
 
 
@@ -199,56 +200,83 @@ class Scheduler:
         profiles.  ``FLUX3_SP8_STARTUP_MODE=ready`` remains available when a
         deployment needs the more conservative predecessor-ready barrier.
         """
+        profile = os.getenv("FLUX3_EXECUTION_PROFILE", "").strip().lower()
         sp8_startup_mode = os.getenv("FLUX3_SP8_STARTUP_MODE", "fixed").strip().lower()
         if sp8_startup_mode not in {"fixed", "ready"}:
             raise ValueError("FLUX3_SP8_STARTUP_MODE must be 'fixed' or 'ready'")
         wait_for_sp8_warmup = (
-            os.getenv("FLUX3_EXECUTION_PROFILE", "").strip().lower() == "sp8"
-            and sp8_startup_mode == "ready"
+            profile == "sp8" and sp8_startup_mode == "ready"
+        )
+        legacy_startup_mode = os.getenv(
+            "FLUX3_LEGACY_STARTUP_MODE", "bootstrap"
+        ).strip().lower()
+        if legacy_startup_mode not in {"bootstrap", "fixed"}:
+            raise ValueError(
+                "FLUX3_LEGACY_STARTUP_MODE must be 'bootstrap' or 'fixed'"
+            )
+        wait_for_legacy_bootstrap = (
+            profile == "legacy-single" and legacy_startup_mode == "bootstrap"
         )
         previous_worker_id = None
+        bootstrap_worker_id = None
         while self.workers_to_open:
             if previous_worker_id is not None and wait_for_sp8_warmup:
-                await self._wait_for_worker_ready(previous_worker_id)
+                await self._wait_for_worker_ready(previous_worker_id, profile="sp8")
+            if bootstrap_worker_id is not None:
+                await self._wait_for_worker_ready(
+                    bootstrap_worker_id, profile="legacy-single"
+                )
+                bootstrap_worker_id = None
 
             worker_id = self.workers_to_open[0].lstrip("(").rstrip(")")
             self._start_worker()
             self.logger.info(
                 f"Worker started, remaining workers to open: {len(self.workers_to_open)}"
             )
+            if wait_for_legacy_bootstrap and previous_worker_id is None:
+                bootstrap_worker_id = worker_id
 
             # Fixed mode uses the common start-to-start delay. Ready mode
-            # applies its delay in _wait_for_worker_ready instead.
-            if self.workers_to_open and not wait_for_sp8_warmup:
+            # applies its delay in _wait_for_worker_ready instead.  The
+            # bootstrap barrier likewise replaces the first fixed delay.
+            if (
+                self.workers_to_open
+                and not wait_for_sp8_warmup
+                and bootstrap_worker_id is None
+            ):
                 await asyncio.sleep(self.settings.new_device_delay_seconds)
             previous_worker_id = worker_id
 
         self.logger.info("All workers started in sequence")
 
-    async def _wait_for_worker_ready(self, worker_id: str) -> None:
-        """Wait for an SP8 predecessor to finish warmup before opening a Ring."""
-        deadline = time.monotonic() + FLUX3_SP8_WARMUP_TIMEOUT_SECONDS
+    async def _wait_for_worker_ready(self, worker_id: str, *, profile: str) -> None:
+        """Wait for the profile-specific predecessor to finish warmup."""
+        timeout = (
+            FLUX3_LEGACY_WARMUP_TIMEOUT_SECONDS
+            if profile == "legacy-single"
+            else FLUX3_SP8_WARMUP_TIMEOUT_SECONDS
+        )
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             worker = self.worker_info.get(worker_id)
             if worker is not None:
                 if worker.get("is_ready", False):
                     if self.settings.new_device_delay_seconds:
                         self.logger.info(
-                            f"SP8 worker {worker_id} ready; waiting "
+                            f"{profile} worker {worker_id} ready; waiting "
                             f"{self.settings.new_device_delay_seconds}s before "
-                            "starting the next Ring"
+                            "starting the next worker"
                         )
                         await asyncio.sleep(self.settings.new_device_delay_seconds)
                     return
                 process = worker.get("process")
                 if process is not None and not process.is_alive():
                     raise RuntimeError(
-                        f"SP8 worker {worker_id} exited before completing warmup"
+                        f"{profile} worker {worker_id} exited before completing warmup"
                     )
             await asyncio.sleep(1.0)
         raise TimeoutError(
-            f"SP8 worker {worker_id} did not report ready within "
-            f"{FLUX3_SP8_WARMUP_TIMEOUT_SECONDS}s"
+            f"{profile} worker {worker_id} did not report ready within {timeout}s"
         )
 
     def _start_worker(self, worker_id=None, queue_index=None):
