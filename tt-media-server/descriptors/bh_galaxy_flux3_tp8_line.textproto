@@ -1,0 +1,15 @@
+# One independent FLUX.3 Klein pure-TP8 worker on a Blackhole Galaxy.
+#
+# TT_VISIBLE_DEVICES contains one topology-local eight-chip group. The
+# logical mesh is 1x8: axis 1 shards tensor-parallel hidden/head channels.
+# This is intentionally LINEAR; the 8x1 Ring descriptor belongs to SP8 and
+# must not be reused for pure TP8.
+mesh_descriptors {
+  name: "M0"
+  arch: BLACKHOLE
+  device_topology { dims: [ 1, 8 ] dim_types: [ LINE, LINE ] }
+  host_topology { dims: [ 1, 1 ] }
+  channels { count: 2 policy: STRICT }
+}
+
+top_level_instance { mesh { mesh_descriptor: "M0" mesh_id: 0 } }

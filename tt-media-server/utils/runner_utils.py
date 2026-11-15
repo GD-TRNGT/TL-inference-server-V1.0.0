@@ -288,6 +288,7 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         # logically as a 4x1 sequence-parallel Ring.
         (4, 1): "n300_2x2_mesh_graph_descriptor.textproto",
         (2, 4): "t3k_mesh_graph_descriptor.textproto",
+        (1, 8): "bh_galaxy_flux3_tp8_line.textproto",
     }
 
     descriptor = mesh_descriptors.get(settings.device_mesh_shape)
@@ -324,8 +325,13 @@ def _setup_grid_override(device: str):
             effective_grid = None
         os.environ["TT_METAL_CORE_GRID_OVERRIDE_TODEPRECATE"] = expected
         if effective_grid:
+            grid_label = (
+                "TP8 core grid"
+                if flux3_profile in {"tp8", "tp-8", "pure-tp8", "pure_tp8"}
+                else "sequence-parallel core grid"
+            )
             _logger.info(
-                "Set FLUX.3 sequence-parallel core grid to "
+                f"Set FLUX.3 {grid_label} to "
                 f"{effective_grid} (TT coordinate override={expected})"
             )
         else:

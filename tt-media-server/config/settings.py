@@ -356,6 +356,21 @@ class Settings(BaseSettings):
                         "Cluster.ReportSystemHealth succeeds."
                     )
 
+            elif mesh == (1, 8):
+                logger.info(
+                    "Running Galaxy FLUX.3 TP8 device discovery "
+                    "(one topology-local 8-chip line per worker)..."
+                )
+                devices = dm.get_device_groups_of_eight()
+                logger.info(
+                    f"Galaxy TP8 discovery returned {len(devices) if devices else 0} groups"
+                )
+                if not devices:
+                    raise RuntimeError(
+                        "Galaxy FLUX.3 TP8 (1,8): device discovery returned no groups. "
+                        "Ensure tt-smi reports all four trays."
+                    )
+
             elif mesh == (2, 4):
                 devices = dm.get_device_groups_of_eight()
                 if not devices:
@@ -386,7 +401,7 @@ class Settings(BaseSettings):
                     )
 
         except Exception as e:
-            if mesh in ((2, 1), (1, 4), (2, 4), (8, 1), (4, 8)):
+            if mesh in ((2, 1), (1, 4), (1, 8), (2, 4), (8, 1), (4, 8)):
 
                 raise RuntimeError(
                     f"Device discovery failed for mesh {mesh}: {e}. "
@@ -453,12 +468,16 @@ class Settings(BaseSettings):
                 "sp2-tp4": "tp4sp2",
                 "sp8tp4": "sp8tp4",
                 "sp8-tp4": "sp8tp4",
+                "tp8": "tp8",
+                "tp-8": "tp8",
+                "pure-tp8": "tp8",
+                "pure_tp8": "tp8",
             }
             try:
                 flux3_profile = aliases[flux3_profile]
             except KeyError as exc:
                 raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, sp8, tp2sp4, tp4sp2, or sp8tp4"
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, sp8, tp8, tp2sp4, tp4sp2, or sp8tp4"
                 ) from exc
             profile_meshes = {
                 "legacy-single": (1, 1),
@@ -468,6 +487,9 @@ class Settings(BaseSettings):
                 # One topology-local Galaxy tray per worker. Weights are
                 # replicated; image-token rows are split over its 8-chip Ring.
                 "sp8": (8, 1),
+                # Pure TP8: hidden/head channels are sharded on the 8-wide
+                # line; this is intentionally not the SP8 (8,1) Ring.
+                "tp8": (1, 8),
                 # One eight-chip tray: TP2 on axis 0 and SP4 on axis 1.
                 "tp2sp4": (2, 4),
                 # Transposed tray axes: TP4 on axis 0 and SP2 on axis 1.
@@ -479,6 +501,7 @@ class Settings(BaseSettings):
                 "sp2": 1,
                 "sp4": 1,
                 "sp8": 1,
+                "tp8": 8,
                 "tp2sp4": 2,
                 "tp4sp2": 4,
                 "sp8tp4": 4,
@@ -495,9 +518,11 @@ class Settings(BaseSettings):
             # Start the four TP1xSP8 Rings at a bounded, fixed interval.
             # FLUX3_SP8_STARTUP_MODE=ready can opt into the predecessor-ready
             # barrier for environments that need the conservative policy.
-            if flux3_profile == "sp8" and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
+            if flux3_profile in {"sp8", "tp8"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
                 self.new_device_delay_seconds = 10
-                logger.info("Applied FLUX.3 SP8 fixed worker-start delay: 10 seconds")
+                logger.info(
+                    f"Applied FLUX.3 {flux3_profile.upper()} fixed worker-start delay: 10 seconds"
+                )
             elif flux3_profile in {"tp2sp4", "tp4sp2"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
                 self.new_device_delay_seconds = 120
                 logger.info(
@@ -519,7 +544,7 @@ class Settings(BaseSettings):
             try:
                 tp_size = int(flux3_tp_size)
             except ValueError as exc:
-                raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, or 4") from exc
+                raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, 4, or 8") from exc
             flux3_parallelism = os.getenv("FLUX3_PARALLELISM", "tp").strip().lower()
             if flux3_parallelism == "sp8":
                 if tp_size != 1:
@@ -542,14 +567,25 @@ class Settings(BaseSettings):
                     "mesh=(4, 8), is_galaxy=True"
                 )
                 return
-            if flux3_parallelism not in {"tp", "sp"}:
+            if flux3_parallelism not in {"tp", "tp8", "sp"}:
                 raise ValueError(
-                    "FLUX3_PARALLELISM must be 'tp', 'sp', 'sp8', or 'sp8tp4'"
+                    "FLUX3_PARALLELISM must be 'tp', 'tp8', 'sp', 'sp8', or 'sp8tp4'"
                 )
             # TP4 is pure tensor parallelism.  A physical 2x2 N300 group can
             # be exposed as either logical 1x4 (axis 1) or logical 4x1 (axis 0)
             # Ring mesh; choose explicitly so their CCL behaviour can be compared.
             flux3_meshes = {1: (1, 1), 2: (2, 1)}
+            if tp_size == 8:
+                tp_mesh = os.getenv("FLUX3_TP_MESH", "1x8").strip().lower()
+                if tp_mesh != "1x8":
+                    raise ValueError("pure FLUX.3 TP8 requires FLUX3_TP_MESH='1x8'")
+                self.device_mesh_shape = (1, 8)
+                self.is_galaxy = True
+                logger.info(
+                    "Applied FLUX.3 pure TP8 override: "
+                    "FLUX3_TP_SIZE=8, mesh=(1,8), is_galaxy=True"
+                )
+                return
             if tp_size == 4:
                 tp_mesh = os.getenv("FLUX3_TP_MESH", "1x4").strip().lower()
                 if tp_mesh not in {"1x4", "4x1"}:
@@ -558,7 +594,7 @@ class Settings(BaseSettings):
             elif tp_size in flux3_meshes:
                 self.device_mesh_shape = flux3_meshes[tp_size]
             else:
-                raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, or 4")
+                raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, 4, or 8")
             self.is_galaxy = tp_size > 1
             logger.info(
                 f"Applied FLUX.3 TP override: FLUX3_TP_SIZE={tp_size}, "
