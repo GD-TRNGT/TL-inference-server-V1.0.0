@@ -305,7 +305,7 @@ ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
 ARG CONTAINER_APP_UID=1000
 ARG CONTAINER_APP_USERNAME=container_app_user
 ARG HOME_DIR=/home/${CONTAINER_APP_USERNAME}
-ARG FLUXCACHE_DIR=/local/fluxcache
+ARG FLUXCACHE_DIR=/local/ttcache
 
 ENV TT_METAL_COMMIT_SHA_OR_TAG=${TT_METAL_COMMIT_SHA_OR_TAG} \
     ENVIRONMENT=development \
@@ -325,7 +325,7 @@ ENV TT_METAL_COMMIT_SHA_OR_TAG=${TT_METAL_COMMIT_SHA_OR_TAG} \
     TT_METAL_LOGS_PATH=${HOME_DIR}/logs
 
 # Persistent host-mounted cache root for FLUX.3. Mount
-# /local/lnn/fluxcache:/local/fluxcache at runtime. This keeps JIT kernels,
+# /local/ttcache/flux-3-image-klein:/local/ttcache at runtime. This keeps JIT kernels,
 # TT-DiT converted weights, HF/PyTorch caches and temporary compiler files out
 # of the container writable layer. FLUX3_COMPONENT_RESIDENCY=resident and
 # FLUX3_REFERENCE_ENCODER_BACKEND=ttnn are validated defaults. FLUX3_MODEL_ROOT

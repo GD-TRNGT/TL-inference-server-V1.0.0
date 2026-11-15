@@ -1,17 +1,388 @@
-# Build with:
-# docker build --build-context ttmetal=/local/lnn/tt-metal \
-#   -f Dockerfile.flux3-sp8-4096 -t <tag> .
+# SPDX-License-Identifier: Apache-2.0
 #
-# The runtime libraries remain in the validated v1.0.6 base image.  Overlay
-# the checked-in tt_dit Python source so the legacy single-card path and the
-# Klein multi-chip path use the same versioned TT-Metal implementation.
-FROM galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.6
+# SPDX-FileCopyrightText: © 2025 Tenstorrent USA, Inc.
 
+# ==============================================================================
+# BUILDER STAGE - build tt-metal and inference server
+# ==============================================================================
+# Note: Dependencies installed in this stage are NOT included in the final image.
+# Only the built artifacts and files are copied to the runtime stage.
+# Runtime dependencies must be installed separately in the runtime stage.
+FROM ghcr.io/tenstorrent/tt-metal/tt-metalium/ubuntu-22.04-dev-amd64:latest AS builder
+
+# Build stage
+LABEL maintainer="Igor Djuric <idjuric@tenstorrent.com>"
+# connect Github repo with package
+LABEL org.opencontainers.image.source=https://github.com/tenstorrent/tt-inference-server
+
+ARG DEBIAN_FRONTEND=noninteractive
+# The image is built from a local tt-metal BuildKit context. Pass the exact
+# local source revision at build time and record it with the resulting image.
+# Example: --build-arg TT_METAL_COMMIT_SHA_OR_TAG=<local-tt-metal-git-sha>
+ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
+# FLUX.3 weights are intentionally not copied into the image. Mount the
+# common model root read-only so either supported checkpoint can be selected:
+#   -v /local/models:/local/models:ro
+#   Base:      FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein-base
+#   Default Distilled: FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein
+# FLUX.3 defaults to Distilled; this Dockerfile does not
+# bake model weights into the image. Override the default checkpoint with:
+#   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein-base  # Base
+#   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein       # Distilled
+# Protect the OpenAI-compatible endpoints with an injected bearer token:
+#   -e OPENAI_API_KEY=<long-random-secret>  # the sole supported API credential
+# 32-worker performance measurements on 2026-11-05 additionally used:
+#   -e TT_MM_THROTTLE_PERF=0
+#   -e TT_METAL_TDP_LIMIT_WATTS=160
+# TTNN reference-image encoding is the FLUX.3 production default. Use CPU
+# only as an explicit fallback when diagnosing device-memory pressure:
+#   -e FLUX3_REFERENCE_ENCODER_BACKEND=cpu
+# The tested L1-small setting is 131072 bytes; 256 KiB conflicts with the DiT
+# static circular-buffer budget:
+#   -e FLUX3_L1_SMALL_SIZE=131072
+
+# make build commit SHA available in the image for reference and debugging
+ENV TT_METAL_COMMIT_SHA_OR_TAG=${TT_METAL_COMMIT_SHA_OR_TAG}
+
+ENV ENVIRONMENT=development
+ENV TT_MM_THROTTLE_PERF=5
+
+ENV SHELL=/bin/bash
+ENV CONTAINER_APP_USERNAME=container_app_user
+ARG HOME_DIR=/home/${CONTAINER_APP_USERNAME}
+# tt-metal build vars
+ENV TT_METAL_HOME=${HOME_DIR}/tt-metal
+ENV CONFIG=Release
+ENV TT_METAL_ENV=dev
+ENV LOGURU_LEVEL=INFO
+# derived vars
+ENV PYTHONPATH=${TT_METAL_HOME}
+# note: PYTHON_ENV_DIR is used by create_venv.sh
+ENV PYTHON_ENV_DIR=${TT_METAL_HOME}/python_env
+ENV LD_LIBRARY_PATH=${TT_METAL_HOME}/build/lib
+
+# apt-get might have an outdated keyring, preventing it to download packages, so we fetch the latest
+RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null \
+    && echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ focal main' | tee /etc/apt/sources.list.d/kitware.list >/dev/null
+
+
+# extra system deps
+RUN apt-get update && apt-get install -y \
+    # required
+    gosu \
+    libgl1 \
+    libsndfile1 \
+    wget \
+    git-lfs \
+    nano \
+    acl \
+    jq \
+    vim \
+    # pyluwen build dependencies (Rust package with protobuf)
+    build-essential \
+    python3-dev \
+    libffi-dev \
+    libssl-dev \
+    protobuf-compiler \
+    libprotobuf-dev \
+    pkg-config \
+    htop \
+    screen \
+    tmux \
+    unzip \
+    zip \
+    curl \
+    libcurl4-openssl-dev \
+    iputils-ping \
+    rsync \
+    && rm -rf /var/lib/apt/lists/* \
+    && protoc --version
+
+# Show the CMake version supplied by the pinned TT-Metalium base image.
+# TT-Metal derives a valid PROJECT_VERSION from the local Git tag before packaging.
+RUN cmake --version
+
+# download.pytorch.org intermittently returns 503 during dependency installs;
+# raise uv's HTTP retry count (default 3) for every uv invocation in create_venv.sh.
+ENV UV_HTTP_RETRIES=10
+# create_venv.sh installs a uv-managed Python interpreter. The build runs as
+# root, so uv's default install dir (~/.local/share/uv) is NOT copied into the
+# runtime stage (which only copies ${HOME_DIR}). Newer tt-metal handles this by
+# deep-copying the interpreter into the venv (--bundle-python); for older pins
+# that predate the flag, keep the interpreter under TT_METAL_HOME so the venv's
+# symlinks still resolve after the copy.
+ENV UV_PYTHON_INSTALL_DIR=${TT_METAL_HOME}/uv-python
+
+# copy the local tt-metal source supplied with:
+#   --build-context tt-metal-local=/local/lnn/tt-metal
+# The main build context remains /local/lnn/TL-inference-server, so the
+# tt-media-server COPY instructions below continue to use the existing paths.
+COPY --from=ttmetal . ${TT_METAL_HOME}
+
+# build local tt-metal
+#
+# Build-only content is reclaimed at the end of THIS RUN rather than in the cleanup
+# step at the end of the builder stage. Deleting a file in a later layer only writes a
+# whiteout: the bytes stay in this layer's snapshot and occupy /var/lib/containerd for
+# the whole build, including the final export and unpack where the build has been
+# running out of disk. Removing them here means they are never committed at all.
+# The resulting image is unchanged -- this only lowers disk during the build.
+RUN cd ${TT_METAL_HOME} \
+    && test -f ./install_dependencies.sh \
+    && ./install_dependencies.sh --docker \
+    # Older pinned tt-metal commits (e.g. BGE's 65718bb) predate create_venv.sh's
+    # --bundle-python flag and exit 1 on unknown arguments, so only pass it when
+    # the script supports it. The test -f guard makes a silent venv failure abort
+    # the build here instead of surfacing as a confusing error many layers later.
+    && if grep -q -- '--bundle-python' ./create_venv.sh; then \
+         CXX=clang++-17 CC=clang-17 bash ./create_venv.sh --bundle-python; \
+       else \
+         CXX=clang++-17 CC=clang-17 bash ./create_venv.sh; \
+       fi \
+    && test -f "${PYTHON_ENV_DIR}/bin/activate" \
+    && echo "source ${PYTHON_ENV_DIR}/bin/activate" >> ${HOME_DIR}/.bashrc \
+    && uv pip install --upgrade setuptools wheel \
+    && bash ./build_metal.sh --release -e \
+    && bash ./build_metal.sh --release -e --build-metal-tests -c --configure-only \
+    && cmake --build build_Release --target test_system_health -j$(nproc) \
+    && uv pip install --upgrade cmake \
+    && hash -r \
+    && rm -rf ${TT_METAL_HOME}/.cpmcache \
+    && rm -rf ${TT_METAL_HOME}/docs \
+    && rm -rf ${TT_METAL_HOME}/tests \
+    && rm -rf ${TT_METAL_HOME}/tech_reports \
+    && rm -rf ${TT_METAL_HOME}/contributing \
+    && rm -rf ${TT_METAL_HOME}/releases \
+    && rm -rf ${TT_METAL_HOME}/dockerfile \
+    && rm -rf ${TT_METAL_HOME}/infra/tests \
+    && rm -rf ${TT_METAL_HOME}/tt-train \
+    # Parenthesized so `|| true` only forgives the .git cleanup: unscoped, it
+    # would swallow a failure anywhere in this && chain and let the build
+    # continue without a venv or a tt-metal build.
+    && (find ${TT_METAL_HOME} -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true)
+
+RUN mkdir -p ${HOME_DIR} \
+    && mkdir -p /run/sshd \
+    && chmod 755 /run/sshd
+
+RUN echo "source ${PYTHON_ENV_DIR}/bin/activate" >> ${HOME_DIR}/.bashrc
+
+# install tt-smi
+RUN /bin/bash -c "source ${PYTHON_ENV_DIR}/bin/activate \
+    && export CARGO_HOME=${HOME_DIR}/.cargo \
+    && export RUSTUP_HOME=${HOME_DIR}/.rustup \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --no-modify-path \
+    && . ${HOME_DIR}/.cargo/env \
+    && rustup update \
+    && uv pip install git+https://github.com/tenstorrent/tt-smi \
+    && (find ${HOME_DIR} -name '.git' -type d -exec rm -rf {} + 2>/dev/null || true)"
+
+WORKDIR ${HOME_DIR}
+
+# install inference server requirements
+ARG APP_DIR="${HOME_DIR}/app"
+ENV APP_DIR=${APP_DIR}
+WORKDIR ${APP_DIR}
+ENV PYTHONPATH=${TT_METAL_HOME}
+COPY "tt-media-server" "${TT_METAL_HOME}/server"
+COPY "tt-media-server/requirements.txt" "${TT_METAL_HOME}/requirements.txt"
+COPY "tt-media-server/audio-requirements.txt" "${TT_METAL_HOME}/audio-requirements.txt"
+COPY "tt-media-server/fix_dependencies.sh" "${TT_METAL_HOME}/fix_dependencies.sh"
+COPY "tt-media-server/uv-overrides.txt" "${TT_METAL_HOME}/uv-overrides.txt"
+# Main venv: Install server requirements (without whisperx/torch pins - those go in audio venv)
+RUN /bin/bash -c "source ${PYTHON_ENV_DIR}/bin/activate \
+    && cd ${TT_METAL_HOME} && uv pip install --no-cache-dir --index-strategy unsafe-best-match -r requirements.txt || \
+    (echo 'Requirements installation failed, trying without pyluwen...' && \
+    grep -v pyluwen requirements.txt > requirements_no_pyluwen.txt && \
+    uv pip install --no-cache-dir --index-strategy unsafe-best-match -r requirements_no_pyluwen.txt) \
+    && echo 'Running dependency fixes...' \
+    && chmod +x fix_dependencies.sh \
+    && ./fix_dependencies.sh"
+
+# Install tt-vllm-plugin
+COPY "tt-vllm-plugin" "${TT_METAL_HOME}/tt-vllm-plugin"
+RUN /bin/bash -c "source ${PYTHON_ENV_DIR}/bin/activate \
+    && cd ${TT_METAL_HOME}/tt-vllm-plugin \
+    && uv pip install ."
+
+# Compatibility note: fix_dependencies.sh installs the latest diffusers (which needs
+# huggingface_hub >= 1.32) and tt-vllm-plugin then pins transformers==4.55.0 (huggingface_hub < 1.0),
+# so importing diffusers fails on huggingface_hub.resolve_revision. Restore the transformers and
+# diffusers pins of the tt-metal revision used to build this image. These pins preserve the
+# MiniMax-H3 runner dependency set; any future dependency upgrade must regression-test both
+# MiniMax-H3 and FLUX.3 before it is accepted.
+RUN /bin/bash -c "source ${PYTHON_ENV_DIR}/bin/activate \
+    && pins=\$(grep -E '^(transformers|diffusers)[[:space:]]*==' ${TT_METAL_HOME}/tt_metal/python_env/requirements-dev.txt | tr -d ' ') \
+    && test \$(echo \"\$pins\" | wc -l) -eq 2 \
+    && uv pip install --no-cache-dir \$pins \
+    && python -c 'import diffusers.utils.hub_utils, huggingface_hub, diffusers, transformers; print(\"huggingface_hub\", huggingface_hub.__version__, \"diffusers\", diffusers.__version__, \"transformers\", transformers.__version__)'"
+
+# Create separate audio venv for whisperx/pyannote (torch 2.7.x)
+# This avoids torch version conflicts with vLLM 0.18.1 which requires torch>=2.10
+ENV AUDIO_VENV_DIR=${TT_METAL_HOME}/audio_venv
+ENV AUDIO_VENV_PYTHON=${AUDIO_VENV_DIR}/bin/python
+RUN /bin/bash -c "python3 -m venv ${AUDIO_VENV_DIR} \
+    && source ${AUDIO_VENV_DIR}/bin/activate \
+    && pip install --upgrade pip setuptools wheel \
+    && pip install uv \
+    && cd ${TT_METAL_HOME} \
+    && uv pip install --no-cache-dir --index-strategy unsafe-best-match --overrides uv-overrides.txt -r audio-requirements.txt \
+    && echo 'Audio venv created successfully with whisperx and torch 2.7.x'"
+
+# Fix GPG keys before installing cpp_server dependencies
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && apt-get update --allow-insecure-repositories || true \
+    && apt-get install -y --allow-unauthenticated gnupg2 ca-certificates \
+    && apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 6AF7F09730B3F0A4 || true \
+    && apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 15CF4D18AF4F7421 || true
+
+# cpp_server deps (apt + Rust if needed + Drogon)
+RUN cd ${TT_METAL_HOME}/server/cpp_server && ./install_dependencies.sh
+
+# Build C++ server (requires Rust for tokenizers-cpp and Clang-20)
+#
+# The build tree is pruned in this same RUN. build/ is ~2GB, of which only the
+# 79MB tt_media_server_cpp binary is used: run_cpp.sh executes it and nothing else,
+# and the binary's RUNPATH is build_Release/lib:/usr/local/lib:/usr/local/share/uv/...
+# -- it never loads anything from its own build directory. The rest is build output:
+# object files, static archives already linked into the binary, FetchContent sources,
+# and ~30 test/benchmark executables. Pruning here (rather than in a later RUN) keeps
+# those bytes out of the layer entirely, so it lowers both image size and peak build disk.
+RUN /bin/bash -c "source ${PYTHON_ENV_DIR}/bin/activate \
+    && export CARGO_HOME=${HOME_DIR}/.cargo \
+    && export RUSTUP_HOME=${HOME_DIR}/.rustup \
+    && export PATH=${HOME_DIR}/.cargo/bin:${PATH} \
+    && export CXX=clang++-20 \
+    && export CC=clang-20 \
+    && cd ${TT_METAL_HOME}/server/cpp_server \
+    && ./build.sh \
+    && rm -rf build/CMakeFiles build/_deps \
+    && find build -maxdepth 1 -type f -name '*_test' -delete \
+    && find build -maxdepth 1 -type f -name '*_benchmark' -delete \
+    && find build -maxdepth 1 -type f -name '*.a' -delete \
+    && find build -name '*.o' -delete \
+    && test -x build/tt_media_server_cpp"
+
+# Add script for running C++ server
+COPY "tt-media-server/run_cpp.sh" "${TT_METAL_HOME}/server/run_cpp.sh"
+RUN chmod +x ${TT_METAL_HOME}/server/run_cpp.sh
+
+# Cleanup build-only directories.
+#
+# Only content that is still needed *above* this point stays here; everything with no
+# later consumer is now reclaimed inside the RUN that creates it (see the tt-metal build).
+# Do not move these earlier:
+#   .cargo / .rustup / /usr/local/rustup  tokenizers-cpp needs Rust during the cpp_server build
+#   tt-metal/cmake                        cpp_server/build.sh reads the clang-20 toolchain file from it
+#   /usr/include                          every C++ compile above needs it
+#   tt-metal/server/*                     only exists after the COPY that follows the tt-metal build
+RUN rm -rf ${HOME_DIR}/.rustup \
+    && rm -rf ${HOME_DIR}/.cargo \
+    && rm -rf ${HOME_DIR}/.cache \
+    && rm -rf ${HOME_DIR}/tt-metal/.github \
+    && rm -rf ${HOME_DIR}/tt-metal/cmake \
+    && rm -rf ${HOME_DIR}/tt-metal/scripts \
+    && rm -rf ${HOME_DIR}/tt-metal/server/tests \
+    && rm -rf ${HOME_DIR}/tt-metal/server/scripts \
+    && rm -rf /usr/local/rustup \
+    && rm -rf /usr/include
+
+
+# ==============================================================================
+# RUNTIME STAGE - final lightweight image
+# ==============================================================================
+# This is the final image that will be used. Only the built artifacts from the builder stage
+# are copied here. Any runtime dependencies needed by the application must be installed in this stage.
+FROM ghcr.io/tenstorrent/tt-metal/tt-metalium/ubuntu-22.04-dev-amd64:latest AS runtime
+
+LABEL maintainer="Igor Djuric <idjuric@tenstorrent.com>"
+LABEL org.opencontainers.image.source=https://github.com/tenstorrent/tt-inference-server
+
+# Reuse all args and environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+ARG TT_METAL_COMMIT_SHA_OR_TAG=local-tt-metal
+ARG CONTAINER_APP_UID=1000
+ARG CONTAINER_APP_USERNAME=container_app_user
+ARG HOME_DIR=/home/${CONTAINER_APP_USERNAME}
+ARG FLUXCACHE_DIR=/local/ttcache
+
+ENV TT_METAL_COMMIT_SHA_OR_TAG=${TT_METAL_COMMIT_SHA_OR_TAG} \
+    ENVIRONMENT=development \
+    TT_MM_THROTTLE_PERF=5 \
+    SHELL=/bin/bash \
+    CONTAINER_APP_USERNAME=${CONTAINER_APP_USERNAME} \
+    TT_METAL_HOME=${HOME_DIR}/tt-metal \
+    TT_METAL_RUNTIME_ROOT=${HOME_DIR}/tt-metal \
+    CONFIG=Release \
+    TT_METAL_ENV=dev \
+    LOGURU_LEVEL=INFO \
+    PYTHONPATH=${HOME_DIR}/tt-metal \
+    PYTHON_ENV_DIR=${HOME_DIR}/tt-metal/python_env \
+    AUDIO_VENV_PYTHON=${HOME_DIR}/tt-metal/audio_venv/bin/python \
+    LD_LIBRARY_PATH=${HOME_DIR}/tt-metal/build/lib \
+    VLLM_USE_V1=1 \
+    TT_METAL_LOGS_PATH=${HOME_DIR}/logs
+
+# Persistent host-mounted cache root for FLUX.3. Mount
+# /local/ttcache/flux-3-image-klein:/local/ttcache at runtime. This keeps JIT kernels,
+# TT-DiT converted weights, HF/PyTorch caches and temporary compiler files out
+# of the container writable layer. FLUX3_COMPONENT_RESIDENCY=resident and
+# FLUX3_REFERENCE_ENCODER_BACKEND=ttnn are validated defaults. FLUX3_MODEL_ROOT
+# remains intentionally unset and must be selected by docker run.
+ENV FLUXCACHE_DIR=${FLUXCACHE_DIR} \
+    CACHE_ROOT=${FLUXCACHE_DIR} \
+    FLUX3_COMPONENT_RESIDENCY=resident \
+    FLUX3_REFERENCE_ENCODER_BACKEND=ttnn \
+    TT_METAL_CACHE=${FLUXCACHE_DIR}/tt-metal-cache \
+    TT_METAL_KERNEL_CACHE_PATH=${FLUXCACHE_DIR}/tt-metal-cache \
+    TT_DIT_CACHE_DIR=${FLUXCACHE_DIR}/tt_dit_cache \
+    XDG_CACHE_HOME=${FLUXCACHE_DIR}/xdg \
+    HF_HOME=${FLUXCACHE_DIR}/hf \
+    HF_HUB_CACHE=${FLUXCACHE_DIR}/hf/hub \
+    HUGGINGFACE_HUB_CACHE=${FLUXCACHE_DIR}/hf/hub \
+    TRANSFORMERS_CACHE=${FLUXCACHE_DIR}/hf/transformers \
+    TORCH_HOME=${FLUXCACHE_DIR}/torch \
+    TRITON_CACHE_DIR=${FLUXCACHE_DIR}/triton \
+    MPLCONFIGDIR=${FLUXCACHE_DIR}/mpl \
+    IMAGE_JOB_OUTPUT_DIR=${FLUXCACHE_DIR}/image-jobs \
+    TMPDIR=${FLUXCACHE_DIR}/tmp
+
+# Install runtime dependencies
+# These packages are required for the application to run in production
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    gosu \
+    libjsoncpp-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create user
+RUN useradd -u ${CONTAINER_APP_UID} -s /bin/bash -d ${HOME_DIR} ${CONTAINER_APP_USERNAME} \
+    && mkdir -p ${HOME_DIR} ${HOME_DIR}/logs \
+    && chown -R ${CONTAINER_APP_USERNAME}:${CONTAINER_APP_USERNAME} ${HOME_DIR} \
+    && mkdir -p /run/sshd \
+    && chmod 755 /run/sshd
+
+# Copy everything from builder
+COPY --from=builder --chown=${CONTAINER_APP_USERNAME}:${CONTAINER_APP_USERNAME} \
+    /home/container_app_user ${HOME_DIR}
+
+# Fix venv permissions (COPY --chown can break symlink permissions)
+RUN chmod -R +x ${PYTHON_ENV_DIR}/bin
+
+USER ${CONTAINER_APP_USERNAME}
+WORKDIR ${HOME_DIR}/tt-metal
+
+# Set up bashrc
+RUN echo "source ${PYTHON_ENV_DIR}/bin/activate" >> ${HOME_DIR}/.bashrc
+
+# Switch back to root for entrypoint (it will drop to non-root user via gosu)
 USER root
-COPY --chown=container_app_user:container_app_user tt-media-server/ /home/container_app_user/tt-metal/server/
-COPY --from=ttmetal --chown=container_app_user:container_app_user models/tt_dit/ /home/container_app_user/tt-metal/models/tt_dit/
-COPY --from=ttmetal --chown=container_app_user:container_app_user tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_sp2_ring.textproto /home/container_app_user/tt-metal/tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_sp2_ring.textproto
-COPY --from=ttmetal --chown=container_app_user:container_app_user tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_sp8tp4_ring.textproto /home/container_app_user/tt-metal/tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_sp8tp4_ring.textproto
-COPY --from=ttmetal --chown=container_app_user:container_app_user tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_tp2sp4_torus.textproto /home/container_app_user/tt-metal/tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_tp2sp4_torus.textproto
-COPY --from=ttmetal --chown=container_app_user:container_app_user tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_tp4sp2_mesh.textproto /home/container_app_user/tt-metal/tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_tp4sp2_mesh.textproto
-RUN chmod +x /home/container_app_user/tt-metal/server/run_uvicorn.sh
+COPY docker-entrypoint.sh ${HOME_DIR}/tt-metal
+RUN chmod +x ${HOME_DIR}/tt-metal/docker-entrypoint.sh
+RUN chmod +x ${TT_METAL_HOME}/server/run_uvicorn.sh
+
+EXPOSE 8000
+ENTRYPOINT ["./docker-entrypoint.sh"]
+# Default to uvicorn
+ENV SERVER_MODE=uvicorn
+CMD ["/bin/bash", "-c", "source ${PYTHON_ENV_DIR}/bin/activate && cd ${TT_METAL_HOME}/server/ && if [ \"$SERVER_MODE\" = \"cpp\" ]; then source ./run_cpp.sh; else source ./run_uvicorn.sh; fi"]

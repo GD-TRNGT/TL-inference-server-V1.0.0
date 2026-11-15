@@ -8,11 +8,17 @@
 galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.16
 ```
 
+Galaxy03 于 2026-11-15 从当前两份本地源码完整重建并验证的镜像：
+
+```text
+sha256:d08eed45d56c09dbb1a4a61afa0a68bbcfe6c210612061f1a6020052c1acd8b9
+```
+
 镜像可直接由当前两个仓库构建；模型权重不会进入镜像。
 
 ```bash
 cd /local/lnn/TL-inference-server
-docker build --progress=plain \
+docker build --pull --no-cache --progress=plain \
   --build-context ttmetal=/local/lnn/tt-metal \
   -f Dockerfile.flux3-sp8-4096 \
   -t galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.16 .
@@ -52,7 +58,7 @@ docker run -d --name flux3-image-klein \
   -v /dev/hugepages:/dev/hugepages \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
   -v /local/models:/local/models:ro \
-  -v /local/ttcache/flux-3-image-klein:/local/fluxcache \
+  -v /local/ttcache/flux-3-image-klein:/local/ttcache \
   -v /local/ttcache/flux-3-image-klein/tt-metal-cache:/home/container_app_user/.cache/tt-metal-cache \
   -e MODEL_SERVICE=image \
   -e MODEL_RUNNER=tt-flux.3-image-klein \
@@ -61,7 +67,7 @@ docker run -d --name flux3-image-klein \
   -e FLUX3_MODEL_ROOT=/local/models/flux-3-image-klein \
   -e FLUX3_MODEL_VARIANT=distilled \
   -e FLUX3_EXECUTION_PROFILE=sp4 \
-  -e FLUX3_TT_METAL_CACHE_ROOT=/local/fluxcache/flux3-worker-cache \
+  -e FLUX3_TT_METAL_CACHE_ROOT=/local/ttcache/flux3-worker-cache \
   -e FLUX3_WARMUP_SIZES=1024 \
   -e TT_MM_THROTTLE_PERF=0 \
   -e TT_METAL_TDP_LIMIT_WATTS=160 \
@@ -70,6 +76,14 @@ docker run -d --name flux3-image-klein \
 ```
 
 切换 profile 时仅替换 `FLUX3_EXECUTION_PROFILE` 值。多卡服务启动前先停止旧容器并执行 `tt-smi -glx_reset_auto`。只有日志出现 `All workers ready (model readiness gated by per-runner warmup)` 后，才表示全部 worker 已可用。
+
+## 当前重建镜像的 SP4 验证
+
+2026-11-15 在 Galaxy03 对上述 `sha256:d08eed45...` 镜像进行了真实服务验证：Distilled、1024×1024、16 steps、无参考图、JPEG、8 个 SP4 worker。服务完成 warmup 后先发送一笔不计时 prime，再同时发送 8 笔请求（每 worker 一笔）。结果为 8/8 JPEG 有效，平均 HTTP `3.342s`（`3.308–3.383s`）、平均去噪 `2.833s`、平均 VAE decode `0.342s`。原始请求、HTTP 时间和设备日志位于：
+
+```text
+/local/lnn/fluxcache/v1016-rebuild-sp4/benchmark/
+```
 
 ## API
 

@@ -56,3 +56,15 @@ Raw artifacts are retained on Galaxy03 under:
 /local/lnn/fluxcache/flux3-v116-final/
 /local/lnn/fluxcache/flux3-v116-final/sp8tp4/
 ```
+
+## 2026-11-15 完整重建镜像的补充复测
+
+本文件上方的全 profile 表对应原始验证镜像 `sha256:04d7aa72...`。随后从当前本地两份源码完整重建得到不同的镜像 ID：
+
+```text
+sha256:d08eed45d56c09dbb1a4a61afa0a68bbcfe6c210612061f1a6020052c1acd8b9
+```
+
+该重建镜像已单独完成 SP4 回归：Distilled、1024×1024、16 steps、无参考图、8 worker 并发、prime 排除，结果 8/8 成功，HTTP 平均 `3.342s`（`3.308–3.383s`）、去噪平均 `2.833s`、VAE decode 平均 `0.342s`。该复测确认重建镜像在 SP4 基线路径与原验证结果一致；它不替代上方原始镜像的全 profile 验证记录。
+
+证据目录：`/local/lnn/fluxcache/v1016-rebuild-sp4/benchmark/`。
