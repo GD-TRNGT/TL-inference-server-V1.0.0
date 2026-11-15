@@ -272,6 +272,27 @@ class TestSetupGalaxyMeshConfig:
                 "bh_galaxy_flux3_sp2_ring.textproto"
             )
 
+    def test_sp8tp4_replaces_inherited_sp4_descriptor(self):
+        """The full 32-chip worker must not be restricted to a 4x1 SP4 mesh."""
+        mock_settings_sp8tp4 = Mock()
+        mock_settings_sp8tp4.device_mesh_shape = (4, 8)
+        mock_settings_sp8tp4.model_runner = "tt-flux.3-image-klein"
+
+        with patch.dict(
+            os.environ,
+            {
+                "FLUX3_EXECUTION_PROFILE": "sp8tp4",
+                "TT_MESH_GRAPH_DESC_PATH": "/old/bh_galaxy_flux3_sp4_ring.textproto",
+            },
+            clear=True,
+        ):
+            with patch("utils.runner_utils.settings", mock_settings_sp8tp4):
+                _setup_galaxy_mesh_config("/opt/tt-metal")
+
+            assert os.environ["TT_MESH_GRAPH_DESC_PATH"].endswith(
+                "bh_galaxy_flux3_sp8tp4_ring.textproto"
+            )
+
     def test_sets_t3k_mesh_descriptor(self):
         """Test mesh descriptor for (2, 4) device shape"""
         with patch.dict(os.environ, {}, clear=True):

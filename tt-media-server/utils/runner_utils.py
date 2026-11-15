@@ -186,6 +186,8 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
                 if is_flux3_tp2sp4
                 else "bh_galaxy_flux3_tp4sp2_mesh.textproto"
                 if is_flux3_tp4sp2
+                else "bh_galaxy_flux3_sp8tp4_ring.textproto"
+                if is_flux3_sp8tp4
                 else None
             )
             if expected_descriptor and os.path.basename(explicit_descriptor) != expected_descriptor:
@@ -207,6 +209,20 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         is_flux3_sp8 = flux3_profile in {"sp8", "sp-8"} or (
             flux3_profile in {"", "auto"} and flux3_parallelism == "sp8"
         )
+        if is_flux3_sp8tp4:
+            # The full Galaxy exposes a 4x8 Ring mesh: TP4 weights on axis 0
+            # and SP8 image-token rows on axis 1. Never inherit a per-tray
+            # SP4 descriptor here, because that limits the system mesh to 4x1.
+            os.environ["TT_MESH_GRAPH_DESC_PATH"] = (
+                f"{tt_metal_home}/tt_metal/fabric/mesh_graph_descriptors/"
+                "bh_galaxy_flux3_sp8tp4_ring.textproto"
+            )
+            TTLogger().info(
+                "Configured FLUX.3 SP8xTP4 full-Galaxy Ring descriptor: "
+                f"{os.environ['TT_MESH_GRAPH_DESC_PATH']}"
+            )
+            return
+
         if flux3_profile in {"sp2", "sp-2"} or (
             flux3_profile in {"", "auto"} and flux3_parallelism == "sp"
         ):

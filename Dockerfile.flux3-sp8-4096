@@ -11,4 +11,7 @@ USER root
 COPY --chown=container_app_user:container_app_user tt-media-server/ /home/container_app_user/tt-metal/server/
 COPY --from=ttmetal --chown=container_app_user:container_app_user models/tt_dit/ /home/container_app_user/tt-metal/models/tt_dit/
 COPY --from=ttmetal --chown=container_app_user:container_app_user tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_sp2_ring.textproto /home/container_app_user/tt-metal/tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_sp2_ring.textproto
+COPY --from=ttmetal --chown=container_app_user:container_app_user tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_sp8tp4_ring.textproto /home/container_app_user/tt-metal/tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_sp8tp4_ring.textproto
+COPY --from=ttmetal --chown=container_app_user:container_app_user tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_tp2sp4_torus.textproto /home/container_app_user/tt-metal/tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_tp2sp4_torus.textproto
+COPY --from=ttmetal --chown=container_app_user:container_app_user tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_tp4sp2_mesh.textproto /home/container_app_user/tt-metal/tt_metal/fabric/mesh_graph_descriptors/bh_galaxy_flux3_tp4sp2_mesh.textproto
 RUN chmod +x /home/container_app_user/tt-metal/server/run_uvicorn.sh
