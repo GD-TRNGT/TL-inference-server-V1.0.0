@@ -1,3 +1,5 @@
+# 已废弃：请使用 GALAXY_INFERENCE_MEDIA_SERVER_FLUX3_V1.0.16_USAGE.md。
+
 # Galaxy Inference Media Server — FLUX.3 Image Klein TL V1.0.3
 
 ## 1. 正式镜像
