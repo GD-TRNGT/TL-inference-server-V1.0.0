@@ -223,6 +223,7 @@ class Settings(BaseSettings):
         flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
         flux3_parent_layouts = {
             "tp2sp4": ((2, 4), "8x4"),
+            "tp4axis1": ((1, 4), "4x8"),
             "sp8": ((8, 1), "8x4"),
             "tp8ring": ((1, 8), "4x8"),
         }
@@ -233,6 +234,8 @@ class Settings(BaseSettings):
             "tp8-ring": "tp8ring",
             "pure-tp8-ring": "tp8ring",
             "pure_tp8_ring": "tp8ring",
+            "tp4-axis1": "tp4axis1",
+            "tp4_axis1": "tp4axis1",
         }.get(flux3_profile, flux3_profile)
         parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "direct").strip().lower()
         parent_spec = flux3_parent_layouts.get(flux3_profile)
@@ -366,14 +369,14 @@ class Settings(BaseSettings):
         # partial mesh and the scheduler could not attach submesh indices.
         if (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and mesh == (4, 1)
-            and flux3_profile in {"sp4", "tp4"}
+            and mesh in {(4, 1), (1, 4)}
+            and flux3_profile in {"sp4", "tp4", "tp4axis1"}
             and parent_mode not in {"0", "false", "off", "direct", "legacy"}
         ):
             os.environ.setdefault("FLUX3_PARENT_MESH_SHAPE", "4x8")
         parent_submesh = (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and mesh in ((4, 1), (2, 4), (8, 1), (1, 8))
+            and mesh in ((4, 1), (1, 4), (2, 4), (8, 1), (1, 8))
             and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
             in {"4x8", "8x4"}
             and os.environ.get("FLUX3_PARENT_MESH_MODE", "parent").strip().lower()
@@ -598,18 +601,22 @@ class Settings(BaseSettings):
                 "pure-tp8-ring": "tp8ring",
                 "pure_tp8_ring": "tp8ring",
                 "tp4": "tp4",
+                "tp4axis1": "tp4axis1",
+                "tp4-axis1": "tp4axis1",
+                "tp4_axis1": "tp4axis1",
             }
             try:
                 flux3_profile = aliases[flux3_profile]
             except KeyError as exc:
                 raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp2linear, tp4, sp2, sp4, sp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp2linear, tp4, tp4axis1, sp2, sp4, sp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
                 ) from exc
             profile_meshes = {
                 "legacy-single": (1, 1),
                 "tp2": (2, 1),
                 "tp2linear": (2, 1),
                 "tp4": (4, 1),
+                "tp4axis1": (1, 4),
                 "sp2": (2, 1),
                 # Four replicas of the weights; image-token rows are split across the Ring.
                 "sp4": (4, 1),
@@ -628,6 +635,7 @@ class Settings(BaseSettings):
                 "tp2": 2,
                 "tp2linear": 2,
                 "tp4": 4,
+                "tp4axis1": 4,
                 "sp2": 1,
                 "sp4": 1,
                 "sp8": 1,
@@ -641,6 +649,7 @@ class Settings(BaseSettings):
                 "tp2": "tp",
                 "tp2linear": "tp",
                 "tp4": "tp",
+                "tp4axis1": "tp",
                 "sp2": "sp",
                 "sp4": "sp4",
                 "sp8": "sp8",

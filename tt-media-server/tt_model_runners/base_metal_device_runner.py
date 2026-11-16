@@ -177,6 +177,8 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
         profile = {
             "sp-4": "sp4",
             "tp-4": "tp4",
+            "tp4-axis1": "tp4axis1",
+            "tp4_axis1": "tp4axis1",
             "tp2-sp4": "tp2sp4",
             "sp4tp2": "tp2sp4",
             "sp4-tp2": "tp2sp4",
@@ -187,6 +189,7 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
         expected = {
             "sp4": ((4, 1), (4, 8)),
             "tp4": ((4, 1), (4, 8)),
+            "tp4axis1": ((1, 4), (4, 8)),
             "tp2sp4": ((2, 4), (8, 4)),
             "sp8": ((8, 1), (8, 4)),
             "tp8ring": ((1, 8), (4, 8)),

@@ -176,6 +176,11 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
             "shape": "4x8",
             "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
         },
+        "tp4axis1": {
+            "child": (1, 4),
+            "shape": "4x8",
+            "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
+        },
         "tp2sp4": {
             "child": (2, 4),
             # Galaxy's official single-mesh descriptor is an 8x4 plain mesh.
@@ -204,6 +209,8 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         "tp8-ring": "tp8ring",
         "pure-tp8-ring": "tp8ring",
         "pure_tp8_ring": "tp8ring",
+        "tp4-axis1": "tp4axis1",
+        "tp4_axis1": "tp4axis1",
     }.get(flux3_profile, flux3_profile)
     parent_spec = flux3_parent_specs.get(flux3_profile)
     is_flux3_parent = (
