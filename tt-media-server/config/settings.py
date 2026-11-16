@@ -416,6 +416,32 @@ class Settings(BaseSettings):
             logger.error(f"Device discovery failed for mesh {mesh}: {e}")
             return
 
+        # Keep the normal Galaxy deployment topology-driven: an 8-chip
+        # profile discovers all valid worker groups. For isolated benchmark
+        # runs, allow selecting one discovered group without reintroducing
+        # arbitrary FLUX3_DEVICE_IDS placement.
+        worker_group_index = os.getenv("FLUX3_WORKER_GROUP_INDEX")
+        if worker_group_index is not None:
+            if self.model_runner != ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value:
+                raise ValueError(
+                    "FLUX3_WORKER_GROUP_INDEX is only supported by "
+                    "MODEL_RUNNER=tt-flux.3-image-klein"
+                )
+            try:
+                group_index = int(worker_group_index)
+            except ValueError as exc:
+                raise ValueError("FLUX3_WORKER_GROUP_INDEX must be a non-negative integer") from exc
+            if group_index < 0 or group_index >= len(devices):
+                raise ValueError(
+                    f"FLUX3_WORKER_GROUP_INDEX={group_index} is out of range "
+                    f"for {len(devices)} discovered worker groups"
+                )
+            devices = [devices[group_index]]
+            logger.info(
+                f"Selected FLUX3 worker group {group_index}; "
+                "service will start one worker for this benchmark"
+            )
+
         self.device_ids = ",".join(
             f"({d})" if isinstance(d, int) else f"({','.join(map(str, d))})"
             for d in devices
@@ -482,6 +508,11 @@ class Settings(BaseSettings):
                 "tp8-ring": "tp8ring",
                 "pure-tp8-ring": "tp8ring",
                 "pure_tp8_ring": "tp8ring",
+                "tp8ring8x1": "tp8ring8x1",
+                "tp8-ring-8x1": "tp8ring8x1",
+                "tp8-8x1": "tp8ring8x1",
+                "pure-tp8-8x1": "tp8ring8x1",
+                "pure_tp8_8x1": "tp8ring8x1",
                 "tp4": "tp4",
                 "tp-4": "tp4",
                 "pure-tp4": "tp4",
@@ -491,7 +522,7 @@ class Settings(BaseSettings):
                 flux3_profile = aliases[flux3_profile]
             except KeyError as exc:
                 raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8, tp8ring, tp8ring8x1, tp2sp4, tp4sp2, or sp8tp4"
                 ) from exc
             profile_meshes = {
                 "legacy-single": (1, 1),
@@ -506,6 +537,10 @@ class Settings(BaseSettings):
                 # line; this is intentionally not the SP8 (8,1) Ring.
                 "tp8": (1, 8),
                 "tp8ring": (1, 8),
+                # Experimental pure TP8 on the physical 8-chip Ring axis.
+                # This is intentionally distinct from SP8, which also uses
+                # an (8,1) mesh but has TP1 x SP8 semantics.
+                "tp8ring8x1": (8, 1),
                 # One eight-chip tray: TP2 on axis 0 and SP4 on axis 1.
                 "tp2sp4": (2, 4),
                 # Transposed tray axes: TP4 on axis 0 and SP2 on axis 1.
@@ -520,23 +555,93 @@ class Settings(BaseSettings):
                 "sp8": 1,
                 "tp8": 8,
                 "tp8ring": 8,
+                "tp8ring8x1": 8,
                 "tp2sp4": 2,
                 "tp4sp2": 4,
                 "sp8tp4": 4,
             }[flux3_profile]
+            canonical_parallelism = {
+                "legacy-single": "tp",
+                "tp4": "tp",
+                "sp2": "sp",
+                "sp4": "sp4",
+                "sp8": "sp8",
+                "tp8": "tp8",
+                "tp8ring": "tp8ring",
+                "tp8ring8x1": "tp8ring8x1",
+                "tp2sp4": "tp2sp4",
+                "tp4sp2": "tp4sp2",
+                "sp8tp4": "sp8tp4",
+            }[flux3_profile]
+            expected_mesh = profile_meshes[flux3_profile]
+
+            # FLUX3_EXECUTION_PROFILE is the canonical public setting.  The
+            # older knobs remain accepted only as compatibility aliases, and
+            # must agree with the selected profile instead of silently being
+            # overwritten.
             requested_tp = os.getenv("FLUX3_TP_SIZE")
-            if requested_tp is not None and int(requested_tp) != expected_tp:
-                logger.warning(
-                    f"FLUX3_EXECUTION_PROFILE={flux3_profile} overrides "
-                    f"FLUX3_TP_SIZE={requested_tp}; using TP{expected_tp}"
+            if requested_tp is not None:
+                try:
+                    requested_tp_int = int(requested_tp)
+                except ValueError as exc:
+                    raise ValueError("FLUX3_TP_SIZE must be an integer") from exc
+                if requested_tp_int != expected_tp:
+                    raise ValueError(
+                        f"FLUX3_EXECUTION_PROFILE={flux3_profile} requires TP{expected_tp}; "
+                        f"got FLUX3_TP_SIZE={requested_tp}"
+                    )
+
+            requested_mesh = os.getenv("FLUX3_TP_MESH")
+            if requested_mesh is not None:
+                normalized_mesh = requested_mesh.strip().lower().replace(" ", "")
+                expected_mesh_text = f"{expected_mesh[0]}x{expected_mesh[1]}"
+                if normalized_mesh != expected_mesh_text:
+                    raise ValueError(
+                        f"FLUX3_EXECUTION_PROFILE={flux3_profile} requires "
+                        f"FLUX3_TP_MESH={expected_mesh_text}; got {requested_mesh}"
+                    )
+
+            requested_parallelism = os.getenv("FLUX3_PARALLELISM")
+            if requested_parallelism is not None:
+                normalized_parallelism = requested_parallelism.strip().lower()
+                parallelism_aliases = {
+                    "tp-4": "tp4",
+                    "pure-tp4": "tp4",
+                    "pure_tp4": "tp4",
+                    "sp-4": "sp4",
+                    "tp-8": "tp8",
+                    "pure-tp8": "tp8",
+                    "pure_tp8": "tp8",
+                    "tp8-ring": "tp8ring",
+                    "pure-tp8-ring": "tp8ring",
+                    "pure_tp8_ring": "tp8ring",
+                    "tp2-sp4": "tp2sp4",
+                    "sp4-tp2": "tp2sp4",
+                    "tp4-sp2": "tp4sp2",
+                    "sp2-tp4": "tp4sp2",
+                    "sp8-tp4": "sp8tp4",
+                }
+                normalized_parallelism = parallelism_aliases.get(
+                    normalized_parallelism, normalized_parallelism
                 )
-            self.device_mesh_shape = profile_meshes[flux3_profile]
+                if normalized_parallelism != canonical_parallelism:
+                    raise ValueError(
+                        f"FLUX3_EXECUTION_PROFILE={flux3_profile} requires "
+                        f"FLUX3_PARALLELISM={canonical_parallelism}; "
+                        f"got {requested_parallelism}"
+                    )
+
+            self.device_mesh_shape = expected_mesh
             self.is_galaxy = flux3_profile != "legacy-single"
-            os.environ["FLUX3_PARALLELISM"] = flux3_profile
+            # Publish one canonical, internally-derived configuration to the
+            # runner.  Users only need to set FLUX3_EXECUTION_PROFILE.
+            os.environ["FLUX3_TP_SIZE"] = str(expected_tp)
+            os.environ["FLUX3_TP_MESH"] = f"{expected_mesh[0]}x{expected_mesh[1]}"
+            os.environ["FLUX3_PARALLELISM"] = canonical_parallelism
             # Start the four TP1xSP8 Rings at a bounded, fixed interval.
             # FLUX3_SP8_STARTUP_MODE=ready can opt into the predecessor-ready
             # barrier for environments that need the conservative policy.
-            if flux3_profile in {"sp8", "tp8", "tp8ring"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
+            if flux3_profile in {"sp8", "tp8", "tp8ring", "tp8ring8x1"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
                 self.new_device_delay_seconds = 10
                 logger.info(
                     f"Applied FLUX.3 {flux3_profile.upper()} fixed worker-start delay: 10 seconds"

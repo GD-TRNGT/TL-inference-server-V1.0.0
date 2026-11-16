@@ -554,16 +554,46 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "tp8-ring": "tp8ring",
         "pure-tp8-ring": "tp8ring",
         "pure_tp8_ring": "tp8ring",
+        "tp8ring8x1": "tp8ring8x1",
+        "tp8-ring-8x1": "tp8ring8x1",
+        "tp8-8x1": "tp8ring8x1",
+        "pure-tp8-8x1": "tp8ring8x1",
+        "pure_tp8_8x1": "tp8ring8x1",
         "tp4": "tp4",
         "tp-4": "tp4",
         "pure-tp4": "tp4",
         "pure_tp4": "tp4",
     }
     if requested in {"", "auto"}:
+        # (4, 1) is shared by two different execution semantics:
+        #   * SP4: replicated weights + sequence-parallel image rows
+        #   * TP4: sharded weights + no sequence parallelism
+        # The mesh shape alone cannot distinguish them.  Previously this
+        # branch silently selected SP4, which made a requested pure TP4 run
+        # execute the wrong model path.  Resolve only from an explicit
+        # parallelism/TP intent; otherwise fail instead of guessing.
+        if normalized == (4, 1):
+            explicit_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
+            explicit_tp_size = os.environ.get("FLUX3_TP_SIZE", "").strip()
+            explicit_tp_mesh = os.environ.get("FLUX3_TP_MESH", "").strip().lower()
+
+            if explicit_parallelism in {"sp", "sp4", "sp-4"}:
+                return "sp4"
+            if (
+                explicit_parallelism in {"tp", "tp4", "tp-4", "pure-tp4", "pure_tp4"}
+                or explicit_tp_size == "4"
+                or explicit_tp_mesh == "4x1"
+            ):
+                return "tp4"
+            raise ValueError(
+                "FLUX3 mesh (4,1) is ambiguous under FLUX3_EXECUTION_PROFILE=auto; "
+                "set FLUX3_EXECUTION_PROFILE=sp4 for SP4 or "
+                "FLUX3_EXECUTION_PROFILE=tp4 for pure TP4"
+            )
+
         detected = {
             (1, 1): "legacy-single",
             (2, 1): "sp2",
-            (4, 1): "sp4",
             (8, 1): "sp8",
             (1, 8): "tp8",
             (2, 4): "tp2sp4",
@@ -575,7 +605,7 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         profile = aliases[requested]
     except KeyError as exc:
         raise ValueError(
-            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
+            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8, tp8ring, tp8ring8x1, tp2sp4, tp4sp2, or sp8tp4"
         ) from exc
     expected_mesh = {
         "legacy-single": (1, 1),
@@ -585,6 +615,7 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "sp8": (8, 1),
         "tp8": (1, 8),
         "tp8ring": (1, 8),
+        "tp8ring8x1": (8, 1),
         "tp2sp4": (2, 4),
         "tp4sp2": (4, 2),
         "sp8tp4": (4, 8),
@@ -604,7 +635,7 @@ def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
         return 1
     if profile == "tp4":
         return 4
-    if profile in {"tp8", "tp8ring"}:
+    if profile in {"tp8", "tp8ring", "tp8ring8x1"}:
         return 8
     if profile == "tp2sp4":
         return 2
@@ -652,11 +683,15 @@ def _flux3_parallel_factors(
         return ((1, 1), (4, 0))
     if profile == "sp8":
         return ((1, 1), (8, 0))
-    if profile == "tp8":
+    if profile in {"tp8", "tp8ring"}:
         # Pure TP8 uses the 8-wide mesh axis for hidden/head sharding and has
         # no sequence-parallel axis. It intentionally stays on the legacy
         # non-SP pipeline instead of reusing SP8's ring path.
         return ((8, 1), (1, 0))
+    if profile == "tp8ring8x1":
+        # Experimental transposed pure TP8: tensor shards use mesh axis 0
+        # over the physical eight-chip Ring.
+        return ((8, 0), (1, 0))
     if profile == "tp2sp4":
         # A 2x4 tray mesh: tensor-parallel weights on axis 0 and image-token
         # sequence parallelism on the physical four-chip line at axis 1.
@@ -668,7 +703,7 @@ def _flux3_parallel_factors(
     if profile == "sp8tp4":
         return ((4, 0), (8, 1))
     parallelism = os.environ.get("FLUX3_PARALLELISM", "tp").strip().lower()
-    if parallelism not in {"tp", "tp8", "tp8ring", "sp", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}:
+    if parallelism not in {"tp", "tp8", "tp8ring", "tp8ring8x1", "sp", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}:
         raise ValueError(
             "FLUX3_PARALLELISM must be 'tp', 'tp8', 'tp8ring', 'sp', 'sp8', 'tp2sp4', 'tp4sp2', or 'sp8tp4'"
         )
@@ -684,11 +719,13 @@ def _flux3_parallel_factors(
         raise ValueError(
             f"FLUX.3 pure TP8 requires a (1, 8) worker mesh; got {normalized}"
         )
-    if parallelism == "tp8ring":
+    if parallelism in {"tp8ring", "tp8ring8x1"}:
         if normalized == (1, 8):
             return ((8, 1), (1, 0))
+        if parallelism == "tp8ring8x1" and normalized == (8, 1):
+            return ((8, 0), (1, 0))
         raise ValueError(
-            f"FLUX.3 pure TP8 Ring requires a (1, 8) worker mesh; got {normalized}"
+            f"FLUX.3 {parallelism} requires a matching worker mesh; got {normalized}"
         )
     if profile == "tp8ring":
         if normalized == (1, 8):
@@ -816,7 +853,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         # not be selected for this pure-TP comparison.
         topology = (
             ttnn.Topology.Ring
-            if self._execution_profile == "tp8ring"
+            if self._execution_profile in {"tp8ring", "tp8ring8x1"}
             else ttnn.Topology.Linear
             if self._execution_profile == "tp8"
             else ttnn.Topology.Ring
@@ -1061,7 +1098,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             "l1_small_size": l1_small_size,
             "fabric_config": (
                 ttnn.FabricConfig.FABRIC_1D_RING
-                if self._execution_profile == "tp8ring"
+                if self._execution_profile in {"tp8ring", "tp8ring8x1"}
                 else ttnn.FabricConfig.FABRIC_1D
                 if self._execution_profile == "tp8"
                 else ttnn.FabricConfig.FABRIC_1D_RING

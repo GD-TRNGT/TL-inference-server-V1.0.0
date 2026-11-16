@@ -120,6 +120,13 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
     """Configure mesh graph descriptors for Galaxy hardware"""
     flux3_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
     flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
+    is_flux3_tp8ring8x1 = flux3_profile in {
+        "tp8ring8x1",
+        "tp8-ring-8x1",
+        "tp8-8x1",
+        "pure-tp8-8x1",
+        "pure_tp8_8x1",
+    }
     is_flux3_sp8tp4 = (
         flux3_profile in {"sp8tp4", "sp8-tp4"}
         or (flux3_profile in {"", "auto"} and flux3_parallelism == "sp8tp4")
@@ -160,6 +167,7 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
         and flux3_profile not in {"", "auto"}
         and not is_flux3_sequence_parallel
+        and not is_flux3_tp8ring8x1
     ):
         inherited_descriptor = os.environ.pop("TT_MESH_GRAPH_DESC_PATH", None)
         if inherited_descriptor:
@@ -294,6 +302,9 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
             if flux3_profile in {"tp8ring", "tp8-ring", "pure-tp8-ring", "pure_tp8_ring"}
             else "bh_galaxy_flux3_tp8_line.textproto"
         ),
+        (8, 1): "bh_galaxy_flux3_tp8_8x1_ring.textproto"
+        if is_flux3_tp8ring8x1
+        else "bh_galaxy_flux3_sp8_ring.textproto",
     }
 
     descriptor = mesh_descriptors.get(settings.device_mesh_shape)
