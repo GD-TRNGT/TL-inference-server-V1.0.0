@@ -546,19 +546,10 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "sp2-tp4": "tp4sp2",
         "sp8tp4": "sp8tp4",
         "sp8-tp4": "sp8tp4",
-        "tp8": "tp8",
-        "tp-8": "tp8",
-        "pure-tp8": "tp8",
-        "pure_tp8": "tp8",
         "tp8ring": "tp8ring",
         "tp8-ring": "tp8ring",
         "pure-tp8-ring": "tp8ring",
         "pure_tp8_ring": "tp8ring",
-        "tp8ring8x1": "tp8ring8x1",
-        "tp8-ring-8x1": "tp8ring8x1",
-        "tp8-8x1": "tp8ring8x1",
-        "pure-tp8-8x1": "tp8ring8x1",
-        "pure_tp8_8x1": "tp8ring8x1",
         "tp4": "tp4",
         "tp-4": "tp4",
         "pure-tp4": "tp4",
@@ -595,7 +586,7 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
             (1, 1): "legacy-single",
             (2, 1): "sp2",
             (8, 1): "sp8",
-            (1, 8): "tp8",
+            (1, 8): "tp8ring",
             (2, 4): "tp2sp4",
             (4, 2): "tp4sp2",
             (4, 8): "sp8tp4",
@@ -605,7 +596,7 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         profile = aliases[requested]
     except KeyError as exc:
         raise ValueError(
-            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8, tp8ring, tp8ring8x1, tp2sp4, tp4sp2, or sp8tp4"
+            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
         ) from exc
     expected_mesh = {
         "legacy-single": (1, 1),
@@ -613,9 +604,7 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "sp2": (2, 1),
         "sp4": (4, 1),
         "sp8": (8, 1),
-        "tp8": (1, 8),
         "tp8ring": (1, 8),
-        "tp8ring8x1": (8, 1),
         "tp2sp4": (2, 4),
         "tp4sp2": (4, 2),
         "sp8tp4": (4, 8),
@@ -635,7 +624,7 @@ def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
         return 1
     if profile == "tp4":
         return 4
-    if profile in {"tp8", "tp8ring", "tp8ring8x1"}:
+    if profile == "tp8ring":
         return 8
     if profile == "tp2sp4":
         return 2
@@ -683,15 +672,10 @@ def _flux3_parallel_factors(
         return ((1, 1), (4, 0))
     if profile == "sp8":
         return ((1, 1), (8, 0))
-    if profile in {"tp8", "tp8ring"}:
-        # Pure TP8 uses the 8-wide mesh axis for hidden/head sharding and has
-        # no sequence-parallel axis. It intentionally stays on the legacy
-        # non-SP pipeline instead of reusing SP8's ring path.
+    if profile == "tp8ring":
+        # Pure TP8 uses the 8-wide Ring for hidden/head sharding and has no
+        # sequence-parallel axis.
         return ((8, 1), (1, 0))
-    if profile == "tp8ring8x1":
-        # Experimental transposed pure TP8: tensor shards use mesh axis 0
-        # over the physical eight-chip Ring.
-        return ((8, 0), (1, 0))
     if profile == "tp2sp4":
         # A 2x4 tray mesh: tensor-parallel weights on axis 0 and image-token
         # sequence parallelism on the physical four-chip line at axis 1.
@@ -703,9 +687,9 @@ def _flux3_parallel_factors(
     if profile == "sp8tp4":
         return ((4, 0), (8, 1))
     parallelism = os.environ.get("FLUX3_PARALLELISM", "tp").strip().lower()
-    if parallelism not in {"tp", "tp8", "tp8ring", "tp8ring8x1", "sp", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}:
+    if parallelism not in {"tp", "tp8ring", "sp", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}:
         raise ValueError(
-            "FLUX3_PARALLELISM must be 'tp', 'tp8', 'tp8ring', 'sp', 'sp8', 'tp2sp4', 'tp4sp2', or 'sp8tp4'"
+            "FLUX3_PARALLELISM must be 'tp', 'tp8ring', 'sp', 'sp8', 'tp2sp4', 'tp4sp2', or 'sp8tp4'"
         )
     if parallelism == "sp8":
         if normalized == (8, 1):
@@ -713,25 +697,11 @@ def _flux3_parallel_factors(
         raise ValueError(
             f"FLUX.3 SP8 requires an (8, 1) worker mesh; got {normalized}"
         )
-    if parallelism == "tp8":
+    if parallelism == "tp8ring":
         if normalized == (1, 8):
             return ((8, 1), (1, 0))
         raise ValueError(
-            f"FLUX.3 pure TP8 requires a (1, 8) worker mesh; got {normalized}"
-        )
-    if parallelism in {"tp8ring", "tp8ring8x1"}:
-        if normalized == (1, 8):
-            return ((8, 1), (1, 0))
-        if parallelism == "tp8ring8x1" and normalized == (8, 1):
-            return ((8, 0), (1, 0))
-        raise ValueError(
-            f"FLUX.3 {parallelism} requires a matching worker mesh; got {normalized}"
-        )
-    if profile == "tp8ring":
-        if normalized == (1, 8):
-            return ((8, 1), (1, 0))
-        raise ValueError(
-            f"FLUX.3 pure TP8 Ring requires a (1, 8) worker mesh; got {normalized}"
+            f"FLUX.3 tp8ring requires a (1, 8) worker mesh; got {normalized}"
         )
     if parallelism == "sp8tp4":
         if normalized == (4, 8):
@@ -849,13 +819,11 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 upsample=False,
                 sizes=warmup_sizes,
             )
-        # Pure TP8 is an 8-wide line. The 8x1 Ring belongs to SP8 and must
-        # not be selected for this pure-TP comparison.
+        # Pure TP8 uses the 1x8 Ring profile. TP4 and SP profiles retain
+        # their own topology selection below.
         topology = (
             ttnn.Topology.Ring
-            if self._execution_profile in {"tp8ring", "tp8ring8x1"}
-            else ttnn.Topology.Linear
-            if self._execution_profile == "tp8"
+            if self._execution_profile == "tp8ring"
             else ttnn.Topology.Ring
             if self._tp_degree > 2
             else ttnn.Topology.Linear
@@ -1098,9 +1066,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             "l1_small_size": l1_small_size,
             "fabric_config": (
                 ttnn.FabricConfig.FABRIC_1D_RING
-                if self._execution_profile in {"tp8ring", "tp8ring8x1"}
-                else ttnn.FabricConfig.FABRIC_1D
-                if self._execution_profile == "tp8"
+                if self._execution_profile == "tp8ring"
                 else ttnn.FabricConfig.FABRIC_1D_RING
                 if (
                     _flux3_tp_degree(self.settings.device_mesh_shape) > 1

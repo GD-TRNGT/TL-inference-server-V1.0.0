@@ -500,19 +500,10 @@ class Settings(BaseSettings):
                 "sp2-tp4": "tp4sp2",
                 "sp8tp4": "sp8tp4",
                 "sp8-tp4": "sp8tp4",
-                "tp8": "tp8",
-                "tp-8": "tp8",
-                "pure-tp8": "tp8",
-                "pure_tp8": "tp8",
                 "tp8ring": "tp8ring",
                 "tp8-ring": "tp8ring",
                 "pure-tp8-ring": "tp8ring",
                 "pure_tp8_ring": "tp8ring",
-                "tp8ring8x1": "tp8ring8x1",
-                "tp8-ring-8x1": "tp8ring8x1",
-                "tp8-8x1": "tp8ring8x1",
-                "pure-tp8-8x1": "tp8ring8x1",
-                "pure_tp8_8x1": "tp8ring8x1",
                 "tp4": "tp4",
                 "tp-4": "tp4",
                 "pure-tp4": "tp4",
@@ -522,7 +513,7 @@ class Settings(BaseSettings):
                 flux3_profile = aliases[flux3_profile]
             except KeyError as exc:
                 raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8, tp8ring, tp8ring8x1, tp2sp4, tp4sp2, or sp8tp4"
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
                 ) from exc
             profile_meshes = {
                 "legacy-single": (1, 1),
@@ -533,14 +524,7 @@ class Settings(BaseSettings):
                 # One topology-local Galaxy tray per worker. Weights are
                 # replicated; image-token rows are split over its 8-chip Ring.
                 "sp8": (8, 1),
-                # Pure TP8: hidden/head channels are sharded on the 8-wide
-                # line; this is intentionally not the SP8 (8,1) Ring.
-                "tp8": (1, 8),
                 "tp8ring": (1, 8),
-                # Experimental pure TP8 on the physical 8-chip Ring axis.
-                # This is intentionally distinct from SP8, which also uses
-                # an (8,1) mesh but has TP1 x SP8 semantics.
-                "tp8ring8x1": (8, 1),
                 # One eight-chip tray: TP2 on axis 0 and SP4 on axis 1.
                 "tp2sp4": (2, 4),
                 # Transposed tray axes: TP4 on axis 0 and SP2 on axis 1.
@@ -553,9 +537,7 @@ class Settings(BaseSettings):
                 "sp2": 1,
                 "sp4": 1,
                 "sp8": 1,
-                "tp8": 8,
                 "tp8ring": 8,
-                "tp8ring8x1": 8,
                 "tp2sp4": 2,
                 "tp4sp2": 4,
                 "sp8tp4": 4,
@@ -566,9 +548,7 @@ class Settings(BaseSettings):
                 "sp2": "sp",
                 "sp4": "sp4",
                 "sp8": "sp8",
-                "tp8": "tp8",
                 "tp8ring": "tp8ring",
-                "tp8ring8x1": "tp8ring8x1",
                 "tp2sp4": "tp2sp4",
                 "tp4sp2": "tp4sp2",
                 "sp8tp4": "sp8tp4",
@@ -609,9 +589,6 @@ class Settings(BaseSettings):
                     "pure-tp4": "tp4",
                     "pure_tp4": "tp4",
                     "sp-4": "sp4",
-                    "tp-8": "tp8",
-                    "pure-tp8": "tp8",
-                    "pure_tp8": "tp8",
                     "tp8-ring": "tp8ring",
                     "pure-tp8-ring": "tp8ring",
                     "pure_tp8_ring": "tp8ring",
@@ -641,7 +618,7 @@ class Settings(BaseSettings):
             # Start the four TP1xSP8 Rings at a bounded, fixed interval.
             # FLUX3_SP8_STARTUP_MODE=ready can opt into the predecessor-ready
             # barrier for environments that need the conservative policy.
-            if flux3_profile in {"sp8", "tp8", "tp8ring", "tp8ring8x1"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
+            if flux3_profile in {"sp8", "tp8ring"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
                 self.new_device_delay_seconds = 10
                 logger.info(
                     f"Applied FLUX.3 {flux3_profile.upper()} fixed worker-start delay: 10 seconds"
@@ -690,9 +667,9 @@ class Settings(BaseSettings):
                     "mesh=(4, 8), is_galaxy=True"
                 )
                 return
-            if flux3_parallelism not in {"tp", "tp8", "sp"}:
+            if flux3_parallelism not in {"tp", "sp"}:
                 raise ValueError(
-                    "FLUX3_PARALLELISM must be 'tp', 'tp8', 'sp', 'sp8', or 'sp8tp4'"
+                    "FLUX3_PARALLELISM must be 'tp', 'sp', 'sp8', or 'sp8tp4'"
                 )
             # TP4 is pure tensor parallelism.  A physical 2x2 N300 group can
             # be exposed as either logical 1x4 (axis 1) or logical 4x1 (axis 0)
@@ -705,7 +682,7 @@ class Settings(BaseSettings):
                 self.device_mesh_shape = (1, 8)
                 self.is_galaxy = True
                 logger.info(
-                    "Applied FLUX.3 pure TP8 override: "
+                    "Applied FLUX.3 pure TP8 Ring override: "
                     "FLUX3_TP_SIZE=8, mesh=(1,8), is_galaxy=True"
                 )
                 return
