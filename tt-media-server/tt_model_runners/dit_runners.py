@@ -551,9 +551,6 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "pure-tp8-ring": "tp8ring",
         "pure_tp8_ring": "tp8ring",
         "tp4": "tp4",
-        "tp-4": "tp4",
-        "pure-tp4": "tp4",
-        "pure_tp4": "tp4",
     }
     if requested in {"", "auto"}:
         # (4, 1) is shared by two different execution semantics:
@@ -571,7 +568,7 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
             if explicit_parallelism in {"sp", "sp4", "sp-4"}:
                 return "sp4"
             if (
-                explicit_parallelism in {"tp", "tp4", "tp-4", "pure-tp4", "pure_tp4"}
+                explicit_parallelism in {"tp", "tp4"}
                 or explicit_tp_size == "4"
                 or explicit_tp_mesh == "4x1"
             ):

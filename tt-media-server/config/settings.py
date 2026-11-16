@@ -505,9 +505,6 @@ class Settings(BaseSettings):
                 "pure-tp8-ring": "tp8ring",
                 "pure_tp8_ring": "tp8ring",
                 "tp4": "tp4",
-                "tp-4": "tp4",
-                "pure-tp4": "tp4",
-                "pure_tp4": "tp4",
             }
             try:
                 flux3_profile = aliases[flux3_profile]
@@ -585,9 +582,6 @@ class Settings(BaseSettings):
             if requested_parallelism is not None:
                 normalized_parallelism = requested_parallelism.strip().lower()
                 parallelism_aliases = {
-                    "tp-4": "tp4",
-                    "pure-tp4": "tp4",
-                    "pure_tp4": "tp4",
                     "sp-4": "sp4",
                     "tp8-ring": "tp8ring",
                     "pure-tp8-ring": "tp8ring",
