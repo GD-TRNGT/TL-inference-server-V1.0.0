@@ -554,6 +554,10 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "tp8-ring": "tp8ring",
         "pure-tp8-ring": "tp8ring",
         "pure_tp8_ring": "tp8ring",
+        "tp4": "tp4",
+        "tp-4": "tp4",
+        "pure-tp4": "tp4",
+        "pure_tp4": "tp4",
     }
     if requested in {"", "auto"}:
         detected = {
@@ -571,10 +575,11 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         profile = aliases[requested]
     except KeyError as exc:
         raise ValueError(
-            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, sp8, tp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
+            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
         ) from exc
     expected_mesh = {
         "legacy-single": (1, 1),
+        "tp4": (4, 1),
         "sp2": (2, 1),
         "sp4": (4, 1),
         "sp8": (8, 1),
@@ -597,6 +602,8 @@ def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
     profile = _flux3_execution_profile(normalized)
     if profile in {"legacy-single", "sp2", "sp4", "sp8"}:
         return 1
+    if profile == "tp4":
+        return 4
     if profile in {"tp8", "tp8ring"}:
         return 8
     if profile == "tp2sp4":
@@ -637,6 +644,8 @@ def _flux3_parallel_factors(
     profile = _flux3_execution_profile(normalized)
     if profile == "legacy-single":
         return ((1, 1), (1, 0))
+    if profile == "tp4":
+        return ((4, 0), (1, 0))
     if profile == "sp2":
         return ((1, 1), (2, 0))
     if profile == "sp4":

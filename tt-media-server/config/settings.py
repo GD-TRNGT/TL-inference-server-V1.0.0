@@ -482,15 +482,20 @@ class Settings(BaseSettings):
                 "tp8-ring": "tp8ring",
                 "pure-tp8-ring": "tp8ring",
                 "pure_tp8_ring": "tp8ring",
+                "tp4": "tp4",
+                "tp-4": "tp4",
+                "pure-tp4": "tp4",
+                "pure_tp4": "tp4",
             }
             try:
                 flux3_profile = aliases[flux3_profile]
             except KeyError as exc:
                 raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, sp8, tp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
                 ) from exc
             profile_meshes = {
                 "legacy-single": (1, 1),
+                "tp4": (4, 1),
                 "sp2": (2, 1),
                 # Four replicas of the weights; image-token rows are split across the Ring.
                 "sp4": (4, 1),
@@ -509,6 +514,7 @@ class Settings(BaseSettings):
             }
             expected_tp = {
                 "legacy-single": 1,
+                "tp4": 4,
                 "sp2": 1,
                 "sp4": 1,
                 "sp8": 1,
