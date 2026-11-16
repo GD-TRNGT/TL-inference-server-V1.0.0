@@ -35,23 +35,48 @@ def setup_runner_environment(
     setup_cpu_threading_limits(cpu_threads, num_torch_threads)
 
     if device_id:
-        os.environ["TT_VISIBLE_DEVICES"] = str(device_id)
-        _logger.info(f"setup_runner_environment: TT_VISIBLE_DEVICES={device_id}")
+        visible_device_id = str(device_id)
+        submesh_marker = "::submesh="
+        if submesh_marker in visible_device_id:
+            visible_device_id, _, submesh_index = visible_device_id.partition(
+                submesh_marker
+            )
+            os.environ["FLUX3_SUBMESH_INDEX"] = submesh_index
+            _logger.info(
+                f"setup_runner_environment: FLUX3_SUBMESH_INDEX={submesh_index}"
+            )
+        os.environ["TT_VISIBLE_DEVICES"] = visible_device_id
+        _logger.info(
+            f"setup_runner_environment: TT_VISIBLE_DEVICES={visible_device_id}"
+        )
 
     if (
         device_id
         and device_id != "-1"
         and settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
     ):
+        # Keep one private JIT cache per worker, matching the SD3.5 runner.
+        # The parent-mesh worker id contains ``::submesh=N`` for scheduler
+        # bookkeeping; never put that marker literally into the cache path.
+        # TT-Metal's fabric JIT creates and atomically renames many files while
+        # the router program is compiled. The stable ``TT_METAL_HOME/built``
+        # layout is the upstream/reference layout and avoids the failed rename
+        # seen with the ad-hoc ``/tmp/...::submesh=N`` path.
         cache_root = os.environ.get("FLUX3_TT_METAL_CACHE_ROOT")
         if not cache_root:
+            cache_root = os.path.join(os.environ.get("TT_METAL_HOME", ""), "built")
+        if not cache_root or cache_root == "built":
             cache_root = os.path.join(
                 os.environ.get("CACHE_ROOT", os.path.expanduser("~/.cache")),
-                "flux3-tt-metal-workers",
+                "tt-metal-built",
             )
-        worker_name = str(device_id).replace(",", "-").replace("(", "").replace(")", "")
-        os.makedirs(os.path.join(cache_root, worker_name), exist_ok=True)
-        os.environ["TT_METAL_CACHE"] = os.path.join(cache_root, worker_name)
+        worker_name = visible_device_id.replace(",", "_").replace("(", "").replace(")", "")
+        if submesh_marker in str(device_id):
+            worker_name += f"_submesh{submesh_index}"
+        worker_cache = os.path.join(cache_root, worker_name)
+        os.makedirs(worker_cache, exist_ok=True)
+        os.environ["TT_METAL_CACHE"] = worker_cache
+        _logger.info(f"setup_runner_environment: TT_METAL_CACHE={worker_cache}")
     if settings.enable_telemetry:
         get_telemetry_client()
 
@@ -134,6 +159,59 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         flux3_profile in {"tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4"}
         or (flux3_profile in {"", "auto"} and flux3_parallelism == "tp4sp2")
     )
+    parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "direct").strip().lower()
+    flux3_parent_specs = {
+        # Match the SD3.5 Galaxy implementation: open the complete physical
+        # 4x8 Galaxy mesh, then select one topology-valid 4x1 child.  A bare
+        # 4x1 open is a partial torus and can fail Fabric router placement.
+        # Both SP4 and pure TP4 use the same physical child shape; the runner
+        # still selects the model-parallel semantics from its profile.
+        "sp4": {
+            "child": (4, 1),
+            "shape": "4x8",
+            "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
+        },
+        "tp4": {
+            "child": (4, 1),
+            "shape": "4x8",
+            "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
+        },
+        "tp2sp4": {
+            "child": (2, 4),
+            # Galaxy's official single-mesh descriptor is an 8x4 plain mesh.
+            # Keep the worker child as 2x4; create_submeshes yields four such
+            # children from the 32-chip 8x4 parent.
+            "shape": "8x4",
+            "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
+        },
+        "sp8": {
+            "child": (8, 1),
+            "shape": "8x4",
+            "descriptor": "single_bh_galaxy_torus_xy_graph_descriptor.textproto",
+        },
+        "tp8ring": {
+            "child": (1, 8),
+            "shape": "4x8",
+            "descriptor": "bh_galaxy_flux3_sp8tp4_ring.textproto",
+        },
+    }
+    flux3_profile = {
+        "sp-4": "sp4",
+        "tp-4": "tp4",
+        "tp2-sp4": "tp2sp4",
+        "sp4tp2": "tp2sp4",
+        "sp4-tp2": "tp2sp4",
+        "tp8-ring": "tp8ring",
+        "pure-tp8-ring": "tp8ring",
+        "pure_tp8_ring": "tp8ring",
+    }.get(flux3_profile, flux3_profile)
+    parent_spec = flux3_parent_specs.get(flux3_profile)
+    is_flux3_parent = (
+        settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+        and parent_spec is not None
+        and tuple(settings.device_mesh_shape) == parent_spec["child"]
+        and parent_mode == "parent"
+    )
     is_flux3_sequence_parallel = (
         flux3_profile in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "tp2sp4", "tp2-sp4", "sp4tp2", "sp4-tp2", "tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4", "sp8tp4", "sp8-tp4"}
         or (
@@ -142,6 +220,40 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         )
     )
     if (
+        settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+        and is_flux3_parent
+    ):
+        # The process opens the complete Galaxy parent mesh and selects one
+        # topology-valid child with create_submeshes().
+        os.environ["FLUX3_PARENT_MESH_SHAPE"] = parent_spec["shape"]
+        descriptor = parent_spec["descriptor"]
+        descriptor_override = os.environ.get("FLUX3_PARENT_MESH_DESCRIPTOR", "").strip()
+        if descriptor_override:
+            descriptor = descriptor_override
+            os.environ["TT_MESH_GRAPH_DESC_PATH"] = (
+                f"{tt_metal_home}/tt_metal/fabric/mesh_graph_descriptors/"
+                f"{descriptor}"
+            )
+        else:
+            # Match the SD3.5 parent/child path: do not force an MGD when the
+            # runtime can resolve the native Blackhole Galaxy topology.  A
+            # forced MGD or PGD from an older image makes SAT placement reject
+            # the full parent before create_submeshes() is reached.  The
+            # reference SD3.5 image leaves both descriptor paths unset and
+            # lets TT-Metal select the pair that matches the detected cluster.
+            os.environ.pop("TT_MESH_GRAPH_DESC_PATH", None)
+            os.environ.pop("TT_METAL_PHYSICAL_GROUPING_DESCRIPTOR_PATH", None)
+        TTLogger().info(
+            f"Configured FLUX.3 {flux3_profile.upper()} parent mesh "
+            f"{parent_spec['shape']} with native Galaxy topology"
+            + (
+                f" and explicit descriptor {os.environ['TT_MESH_GRAPH_DESC_PATH']}"
+                if descriptor_override
+                else " (no forced MGD)"
+            )
+        )
+        return
+    elif (
         settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
         and is_flux3_sp8tp4
     ):
@@ -276,7 +388,7 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
             )
             return
 
-        if is_flux3_tp2sp4:
+        if is_flux3_tp2sp4 and not is_flux3_parent:
             # One topology-local tray per worker. Axis 0 is the two-chip TP
             # line and axis 1 is the four-chip SP line; TT_VISIBLE_DEVICES
             # binds each of the four workers to a distinct tray.

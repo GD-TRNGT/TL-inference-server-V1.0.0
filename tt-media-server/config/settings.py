@@ -217,6 +217,38 @@ class Settings(BaseSettings):
         self._set_mesh_overrides()
         logger.info(f"After mesh overrides: device_mesh_shape={self.device_mesh_shape}")
 
+        # FLUX.3 multi-worker Galaxy profiles can use one physical 32-chip
+        # parent mesh and independent child meshes. Keep the old per-worker
+        # discovery path available with FLUX3_PARENT_MESH_MODE=legacy.
+        flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
+        flux3_parent_layouts = {
+            "tp2sp4": ((2, 4), "8x4"),
+            "sp8": ((8, 1), "8x4"),
+            "tp8ring": ((1, 8), "4x8"),
+        }
+        flux3_profile = {
+            "tp2-sp4": "tp2sp4",
+            "sp4tp2": "tp2sp4",
+            "sp4-tp2": "tp2sp4",
+            "tp8-ring": "tp8ring",
+            "pure-tp8-ring": "tp8ring",
+            "pure_tp8_ring": "tp8ring",
+        }.get(flux3_profile, flux3_profile)
+        parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "direct").strip().lower()
+        parent_spec = flux3_parent_layouts.get(flux3_profile)
+        if (
+            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and parent_spec is not None
+            and self.device_mesh_shape == parent_spec[0]
+            and parent_mode == "parent"
+        ):
+            os.environ.setdefault("FLUX3_PARENT_MESH_SHAPE", parent_spec[1])
+            os.environ.setdefault("FLUX3_PARENT_MESH_WORKERS", "4")
+            logger.info(
+                f"Enabled FLUX3 {flux3_profile.upper()} parent mesh: "
+                f"parent={parent_spec[1]}, child={parent_spec[0]}, workers=4"
+            )
+
         if self.model_service is None:
             found = False
             for service, runners in MODEL_SERVICE_RUNNER_MAP.items():
@@ -321,9 +353,66 @@ class Settings(BaseSettings):
         dm = DeviceManager()
         devices = []
         mesh = self.device_mesh_shape
+        flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
+        flux3_profile = {
+            "sp-4": "sp4",
+            "tp-4": "tp4",
+        }.get(flux3_profile, flux3_profile)
+        parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "parent").strip().lower()
+        # Make the SD3.5-style parent/child path automatic for four-chip
+        # FLUX3 workers.  Settings is constructed before worker_utils calls
+        # setup_runner_environment(), so the parent shape must be exported
+        # here; otherwise discovery would hand every worker only a 4-chip
+        # partial mesh and the scheduler could not attach submesh indices.
+        if (
+            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and mesh == (4, 1)
+            and flux3_profile in {"sp4", "tp4"}
+            and parent_mode not in {"0", "false", "off", "direct", "legacy"}
+        ):
+            os.environ.setdefault("FLUX3_PARENT_MESH_SHAPE", "4x8")
+        parent_submesh = (
+            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and mesh in ((4, 1), (2, 4), (8, 1), (1, 8))
+            and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
+            in {"4x8", "8x4"}
+            and os.environ.get("FLUX3_PARENT_MESH_MODE", "parent").strip().lower()
+            not in {"0", "false", "off", "direct", "legacy"}
+        )
+        if parent_submesh:
+            logger.info(
+                f"FLUX3 parent/child mode enabled for child mesh {mesh}: "
+                f"parent={os.environ.get('FLUX3_PARENT_MESH_SHAPE')}"
+            )
 
         try:
-            if mesh == (1, 1) and self.use_greedy_based_allocation:
+            if parent_submesh:
+                full_groups = dm.get_device_groups_of_thirty_two()
+                if not full_groups:
+                    raise RuntimeError(
+                        "FLUX3 parent mesh requires exactly one 32-chip Galaxy group"
+                    )
+                # A parent mesh owns all 32 chips in one process.  This is the
+                # SD3.5 pattern: the process opens the full Galaxy and then
+                # selects one child view.  Multiple processes cannot each map
+                # the same 32-chip parent because UMD sysmem ownership is
+                # process-global on the host.
+                default_worker_count = 1
+                worker_count = int(
+                    os.environ.get("FLUX3_PARENT_MESH_WORKERS", str(default_worker_count))
+                )
+                if worker_count != default_worker_count:
+                    raise RuntimeError(
+                        "FLUX3_PARENT_MESH_WORKERS must be 1 in parent/child mode; "
+                        "use direct mode for multiple independent workers"
+                    )
+                devices = [full_groups[0]] * worker_count
+                logger.info(
+                    f"Using the complete 32-chip device group for {worker_count} "
+                    "independent parent-mesh workers"
+                )
+
+            elif mesh == (1, 1) and self.use_greedy_based_allocation:
                 devices = dm.get_single_devices()
 
             elif mesh == (2, 1):

@@ -294,13 +294,26 @@ class Scheduler:
             )
         worker_id = worker_id.lstrip("(").rstrip(")")
 
-        self.logger.info(f"Starting worker {worker_id}")
-
         # Use existing queue index when restarting; otherwise assign by order
         if queue_index is not None:
             worker_index = queue_index
         else:
             worker_index = len(self.worker_info)
+
+        # Parent/child FLUX.3 workers all see the same 32-chip parent mesh.
+        # Make their scheduler identities unique while runner_utils strips this
+        # marker before assigning TT_VISIBLE_DEVICES. Legacy mode is unchanged.
+        if (
+            os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
+            in {"4x8", "8x4"}
+            and tuple(self.settings.device_mesh_shape) in ((4, 1), (2, 4), (8, 1), (1, 8))
+            and os.environ.get("FLUX3_PARENT_MESH_MODE", "direct").strip().lower()
+            == "parent"
+            and "::submesh=" not in worker_id
+        ):
+            worker_id = f"{worker_id}::submesh={worker_index}"
+
+        self.logger.info(f"Starting worker {worker_id}")
 
         result_queue = None
         if self.settings.use_queue_per_worker:

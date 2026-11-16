@@ -3,6 +3,8 @@
 # SPDX-FileCopyrightText: © 2025 Tenstorrent USA, Inc.
 
 
+import os
+
 import ttnn
 from tt_model_runners.base_device_runner import BaseDeviceRunner
 
@@ -10,6 +12,9 @@ from tt_model_runners.base_device_runner import BaseDeviceRunner
 class BaseMetalDeviceRunner(BaseDeviceRunner):
     def __init__(self, device_id: str):
         super().__init__(device_id)
+        # In Galaxy hybrid TP/DP mode the process owns one child mesh while
+        # the parent remains alive for the whole model lifetime.
+        self._parent_mesh_device = None
 
     def get_pipeline_device_params(self):
         return None
@@ -24,8 +29,13 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
     def close_device(self):
         try:
             self.logger.info(f"Device {self.device_id}: Closing mesh device...")
-            if self.ttnn_device is not None:
-                ttnn.close_mesh_device(self.ttnn_device)
+            mesh_device = self._parent_mesh_device or self.ttnn_device
+            if mesh_device is not None:
+                # A submesh is a view owned by its parent; close the parent
+                # handle once, rather than closing the child view directly.
+                ttnn.close_mesh_device(mesh_device)
+                self.ttnn_device = None
+                self._parent_mesh_device = None
                 self.logger.info(
                     f"Device {self.device_id}: Successfully closed mesh device"
                 )
@@ -80,14 +90,69 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
                 f"Device {self.device_id}: Found {len(device_ids)} available TTNN devices: {device_ids}"
             )
 
-            mesh_shape = ttnn.MeshShape(self.settings.device_mesh_shape)
+            child_shape = tuple(self.settings.device_mesh_shape)
+            parent_shape = self._parent_mesh_shape()
+            mesh_shape = ttnn.MeshShape(parent_shape or child_shape)
 
             device_params = self.get_pipeline_device_params()
             updated_device_params = self.get_updated_device_params(device_params)
+            if parent_shape is not None:
+                # The default parent path is the validated 4x8 Galaxy Ring.
+                # Graph-based parents built from physical 2x4 meshes expose
+                # mesh connectivity instead, so allow an explicit topology
+                # override for those descriptors.
+                parent_fabric = os.environ.get(
+                    "FLUX3_PARENT_FABRIC_CONFIG", "1d_ring"
+                ).strip().lower()
+                parent_fabric_config = {
+                    "1d_ring": ttnn.FabricConfig.FABRIC_1D_RING,
+                    "ring": ttnn.FabricConfig.FABRIC_1D_RING,
+                    "1d": ttnn.FabricConfig.FABRIC_1D,
+                    "2d": ttnn.FabricConfig.FABRIC_2D,
+                    "mesh": ttnn.FabricConfig.FABRIC_2D,
+                }.get(parent_fabric)
+                if parent_fabric_config is None:
+                    raise ValueError(
+                        "FLUX3_PARENT_FABRIC_CONFIG must be one of "
+                        "1d_ring, 1d, or 2d"
+                    )
+                updated_device_params["fabric_config"] = parent_fabric_config
+                self.logger.info(
+                    f"Device {self.device_id}: parent mesh {parent_shape} "
+                    f"uses {parent_fabric} fabric for placement"
+                )
             fabric_config = self._configure_fabric(updated_device_params)
-            mesh_device = self._initialize_mesh_device(
+            parent_device = self._initialize_mesh_device(
                 mesh_shape, updated_device_params, fabric_config
             )
+
+            if parent_shape is not None:
+                child_meshes = parent_device.create_submeshes(
+                    ttnn.MeshShape(child_shape)
+                )
+                if not child_meshes:
+                    raise RuntimeError(
+                        f"Parent mesh {parent_shape} did not produce any "
+                        f"submeshes of shape {child_shape}"
+                    )
+                try:
+                    submesh_index = int(os.environ.get("FLUX3_SUBMESH_INDEX", "0"))
+                except ValueError as exc:
+                    raise RuntimeError("FLUX3_SUBMESH_INDEX must be an integer") from exc
+                if submesh_index < 0 or submesh_index >= len(child_meshes):
+                    raise RuntimeError(
+                        f"FLUX3_SUBMESH_INDEX={submesh_index} is out of range for "
+                        f"{len(child_meshes)} submeshes of shape {child_shape}"
+                    )
+                self._parent_mesh_device = parent_device
+                mesh_device = child_meshes[submesh_index]
+                self.logger.info(
+                    f"Device {self.device_id}: Created parent mesh {parent_shape} "
+                    f"and selected child mesh {child_shape} at index {submesh_index} "
+                    f"({mesh_device.get_num_devices()} devices)"
+                )
+            else:
+                mesh_device = parent_device
 
             self.logger.info(
                 f"Device {self.device_id}: Created mesh device with {mesh_device.get_num_devices()} devices"
@@ -103,6 +168,51 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
 
     def _configure_fabric(self, updated_device_params):
         return None
+
+    def _parent_mesh_shape(self):
+        """Return the opt-in parent mesh for a hybrid Galaxy worker."""
+        raw = os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
+        child = tuple(self.settings.device_mesh_shape)
+        profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
+        profile = {
+            "sp-4": "sp4",
+            "tp-4": "tp4",
+            "tp2-sp4": "tp2sp4",
+            "sp4tp2": "tp2sp4",
+            "sp4-tp2": "tp2sp4",
+            "tp8-ring": "tp8ring",
+            "pure-tp8-ring": "tp8ring",
+            "pure_tp8_ring": "tp8ring",
+        }.get(profile, profile)
+        expected = {
+            "sp4": ((4, 1), (4, 8)),
+            "tp4": ((4, 1), (4, 8)),
+            "tp2sp4": ((2, 4), (8, 4)),
+            "sp8": ((8, 1), (8, 4)),
+            "tp8ring": ((1, 8), (4, 8)),
+        }.get(profile)
+        if not raw or expected is None or child != expected[0]:
+            return None
+        try:
+            rows, cols = (
+                int(part) for part in raw.replace("x", ",").split(",")
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "FLUX3_PARENT_MESH_SHAPE must use '<rows>x<cols>'"
+            ) from exc
+        if rows < 1 or cols < 1:
+            raise RuntimeError(f"Invalid FLUX3_PARENT_MESH_SHAPE={raw!r}")
+        if rows * cols < child[0] * child[1]:
+            raise RuntimeError(
+                f"Parent mesh {(rows, cols)} is smaller than child mesh {child}"
+            )
+        if (rows, cols) != expected[1]:
+            raise RuntimeError(
+                f"FLUX3_EXECUTION_PROFILE={profile} requires parent mesh "
+                f"{expected[1][0]}x{expected[1][1]}, got {raw!r}"
+            )
+        return (rows, cols)
 
     def _initialize_mesh_device(self, mesh_shape, device_params, fabric_config):
         try:
