@@ -377,11 +377,11 @@ class Settings(BaseSettings):
                         "Ensure tt-smi reports all four trays."
                     )
 
-            elif mesh == (2, 4):
+            elif mesh in ((2, 4), (4, 2)):
                 devices = dm.get_device_groups_of_eight()
                 if not devices:
                     raise RuntimeError(
-                        "Galaxy TP8 (2,4): device discovery returned no groups. "
+                        f"Galaxy FLUX.3 {mesh}: device discovery returned no groups. "
                         "Ensure tt-smi is available and returns at least 8 devices per tray."
                     )
 
@@ -407,7 +407,7 @@ class Settings(BaseSettings):
                     )
 
         except Exception as e:
-            if mesh in ((2, 1), (1, 4), (1, 8), (2, 4), (8, 1), (4, 8)):
+            if mesh in ((2, 1), (1, 4), (1, 8), (2, 4), (4, 2), (8, 1), (4, 8)):
 
                 raise RuntimeError(
                     f"Device discovery failed for mesh {mesh}: {e}. "
@@ -486,6 +486,10 @@ class Settings(BaseSettings):
                 "single-card": "legacy-single",
                 "legacy-single": "legacy-single",
                 "sp2": "sp2",
+                "tp2": "tp2",
+                "tp2linear": "tp2linear",
+                "tp2-linear": "tp2linear",
+                "tp2_line": "tp2linear",
                 "sp4": "sp4",
                 "sp-4": "sp4",
                 "sp8": "sp8",
@@ -510,10 +514,12 @@ class Settings(BaseSettings):
                 flux3_profile = aliases[flux3_profile]
             except KeyError as exc:
                 raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp2linear, tp4, sp2, sp4, sp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
                 ) from exc
             profile_meshes = {
                 "legacy-single": (1, 1),
+                "tp2": (2, 1),
+                "tp2linear": (2, 1),
                 "tp4": (4, 1),
                 "sp2": (2, 1),
                 # Four replicas of the weights; image-token rows are split across the Ring.
@@ -530,6 +536,8 @@ class Settings(BaseSettings):
             }
             expected_tp = {
                 "legacy-single": 1,
+                "tp2": 2,
+                "tp2linear": 2,
                 "tp4": 4,
                 "sp2": 1,
                 "sp4": 1,
@@ -541,6 +549,8 @@ class Settings(BaseSettings):
             }[flux3_profile]
             canonical_parallelism = {
                 "legacy-single": "tp",
+                "tp2": "tp",
+                "tp2linear": "tp",
                 "tp4": "tp",
                 "sp2": "sp",
                 "sp4": "sp4",

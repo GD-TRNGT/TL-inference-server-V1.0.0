@@ -532,6 +532,10 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "single-card": "legacy-single",
         "legacy-single": "legacy-single",
         "sp2": "sp2",
+        "tp2": "tp2",
+        "tp2linear": "tp2linear",
+        "tp2-linear": "tp2linear",
+        "tp2_line": "tp2linear",
         "sp4": "sp4",
         "sp-4": "sp4",
         "sp8": "sp8",
@@ -593,10 +597,12 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         profile = aliases[requested]
     except KeyError as exc:
         raise ValueError(
-            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp4, sp2, sp4, sp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
+            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp2linear, tp4, sp2, sp4, sp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
         ) from exc
     expected_mesh = {
         "legacy-single": (1, 1),
+        "tp2": (2, 1),
+        "tp2linear": (2, 1),
         "tp4": (4, 1),
         "sp2": (2, 1),
         "sp4": (4, 1),
@@ -619,6 +625,8 @@ def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
     profile = _flux3_execution_profile(normalized)
     if profile in {"legacy-single", "sp2", "sp4", "sp8"}:
         return 1
+    if profile in {"tp2", "tp2linear"}:
+        return 2
     if profile == "tp4":
         return 4
     if profile == "tp8ring":
@@ -661,6 +669,12 @@ def _flux3_parallel_factors(
     profile = _flux3_execution_profile(normalized)
     if profile == "legacy-single":
         return ((1, 1), (1, 0))
+    if profile in {"tp2", "tp2linear"}:
+        # Pure TP2 shards the hidden dimension across the two-chip mesh.
+        # The worker mesh is (2, 1), so the TP factor must be placed on
+        # physical axis 0.  Using axis 1 leaves the two-chip dimension
+        # unsharded and makes the cache look like SP2.
+        return ((2, 0), (1, 0))
     if profile == "tp4":
         return ((4, 0), (1, 0))
     if profile == "sp2":
@@ -771,7 +785,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         # buckets text to 1024 rows for ring SDPA; that padding requires SP
         # masking and is not valid for its non-SP attention branch. The
         # legacy path supplies matching non-SP masking and image references.
-        return self._execution_profile in {"sp2", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
+        return self._execution_profile in {"tp2", "tp2linear", "sp2", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
 
     def create_pipeline(self):
         if self._uses_klein_pipeline():
@@ -782,7 +796,11 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             # A Galaxy tray exposes a physical 2x4 mesh, not a torus. Its
             # TP2xSP4 collectives must therefore use the linear 2D-fabric
             # algorithms; the other profiles below have verified Ring paths.
-            is_ring_mesh = mesh_shape in {(4, 1), (8, 1), (4, 8)}
+            is_ring_mesh = self._execution_profile == "tp2" or mesh_shape in {
+                (4, 1),
+                (8, 1),
+                (4, 8),
+            }
             topology = ttnn.Topology.Ring if is_ring_mesh else ttnn.Topology.Linear
             num_links = 2 if is_ring_mesh else 1
             weights_path = Path(_resolve_flux3_weights_path(self.settings.model_weights_path))
@@ -873,13 +891,20 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             )
             # Shard VAE channel-heavy convolutions along the same logical TP axis as
             # the DiT. A (1, 1) mesh keeps the existing single-chip config.
-            vae_parallel = (
-                Flux2VaeParallelConfig.from_axes(
+            # Pure TP2 is used to shard the text/DiT hidden dimension.  Keep
+            # the VAE replicated on the two chips, as SP2 does: the VAE
+            # decoder is not on the critical TP collective path and its
+            # experimental TP2 weight-sharded cache can deadlock during the
+            # first device-to-host cache write.  TP4/TP8 retain their tested
+            # VAE parallel configurations.
+            if self._execution_profile in {"tp2", "tp2linear"}:
+                vae_parallel = Flux2VaeParallelConfig()
+            elif self._dit_parallel.tensor_parallel.factor > 1:
+                vae_parallel = Flux2VaeParallelConfig.from_axes(
                     self.ttnn_device, tp_axis=self._dit_parallel.tensor_parallel.mesh_axis
                 )
-                if self._dit_parallel.tensor_parallel.factor > 1
-                else Flux2VaeParallelConfig()
-            )
+            else:
+                vae_parallel = Flux2VaeParallelConfig()
             self._vae_decoder = pipeline.create_vae_decoder(
                 device=self.ttnn_device,
                 ccl_manager=self._ccl_manager,
@@ -1047,6 +1072,11 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                     "l1_small_size": 65536,
                     "fabric_config": ttnn.FabricConfig.FABRIC_1D_RING,
                     "fabric_router_config": router_config,
+                }
+            if self._execution_profile == "tp2linear":
+                return {
+                    "l1_small_size": int(os.environ.get("FLUX3_L1_SMALL_SIZE", "131072")),
+                    "fabric_config": ttnn.FabricConfig.FABRIC_1D,
                 }
             return {
                 "l1_small_size": int(os.environ.get("FLUX3_L1_SMALL_SIZE", "131072")),

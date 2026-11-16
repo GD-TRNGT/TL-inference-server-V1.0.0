@@ -128,6 +128,8 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         flux3_profile in {"tp2sp4", "tp2-sp4", "sp4tp2", "sp4-tp2"}
         or (flux3_profile in {"", "auto"} and flux3_parallelism == "tp2sp4")
     )
+    is_flux3_tp2 = flux3_profile == "tp2"
+    is_flux3_tp2linear = flux3_profile in {"tp2linear", "tp2-linear", "tp2_line"}
     is_flux3_tp4sp2 = (
         flux3_profile in {"tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4"}
         or (flux3_profile in {"", "auto"} and flux3_parallelism == "tp4sp2")
@@ -167,6 +169,27 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
                 "Removed inherited FLUX.3 sequence-parallel mesh descriptor "
                 f"for profile {flux3_profile}"
             )
+
+    if (
+        settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+        and (is_flux3_tp2 or is_flux3_tp2linear)
+    ):
+        descriptor = (
+            "bh_galaxy_flux3_sp2_linear.textproto"
+            if is_flux3_tp2linear
+            else "bh_galaxy_flux3_sp2_ring.textproto"
+        )
+        os.environ["TT_MESH_GRAPH_DESC_PATH"] = (
+            f"{tt_metal_home}/tt_metal/fabric/mesh_graph_descriptors/"
+            f"{descriptor}"
+        )
+        TTLogger().info(
+            f"Configured FLUX.3 pure TP2 {'Linear' if is_flux3_tp2linear else 'Ring'} descriptor: "
+            f"{os.environ['TT_MESH_GRAPH_DESC_PATH']}"
+        )
+        # Pure TP2 is not sequence parallel; return after the normal core-grid
+        # and inherited-descriptor cleanup above.
+        return
 
     # SP2 requires the explicit two-chip Galaxy descriptor mounted by the
     # deployment.  Do not replace it with the single-board N300 descriptor.
