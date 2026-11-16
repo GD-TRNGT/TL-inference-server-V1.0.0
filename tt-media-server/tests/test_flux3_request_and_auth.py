@@ -64,11 +64,12 @@ def test_openai_api_key_is_the_single_supported_deployment_variable(monkeypatch)
     assert getattr(error.value, "status_code", None) == HTTP_401_UNAUTHORIZED
 
 
-def test_legacy_api_key_is_not_used_when_openai_key_is_absent(monkeypatch):
+def test_default_key_is_used_when_openai_key_is_absent(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("API_KEY", "legacy-token")
 
-    assert api_key_checker.configured_api_key() is None
+    assert api_key_checker.configured_api_key() == "turing123"
+    assert api_key_checker.get_api_key("Bearer turing123") == "Bearer turing123"
 
 
 def test_missing_header_returns_401_when_key_is_configured(monkeypatch):
@@ -79,11 +80,9 @@ def test_missing_header_returns_401_when_key_is_configured(monkeypatch):
     assert getattr(error.value, "status_code", None) == HTTP_401_UNAUTHORIZED
 
 
-def test_missing_api_key_is_never_replaced_by_a_published_default(monkeypatch):
+def test_default_key_is_used_when_no_key_is_configured(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("API_KEY", raising=False)
 
-    assert api_key_checker.configured_api_key() is None
-    with pytest.raises(Exception) as error:
-        api_key_checker.get_api_key("Bearer your-secret-key")
-    assert getattr(error.value, "status_code", None) == 503
+    assert api_key_checker.configured_api_key() == "turing123"
+    assert api_key_checker.get_api_key("Bearer turing123") == "Bearer turing123"

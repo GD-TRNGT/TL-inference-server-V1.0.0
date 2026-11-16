@@ -1,0 +1,11 @@
+# Experimental pure-TP8 descriptor using the physical cross-tray 8-chip Ring.
+# The logical mesh remains 1x8 so tensor-parallel sharding stays on axis 1.
+mesh_descriptors {
+  name: "M0"
+  arch: BLACKHOLE
+  device_topology { dims: [ 1, 8 ] dim_types: [ LINE, RING ] }
+  host_topology { dims: [ 1, 1 ] }
+  channels { count: 2 policy: STRICT }
+}
+
+top_level_instance { mesh { mesh_descriptor: "M0" mesh_id: 0 } }

@@ -280,6 +280,7 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
             )
             return
 
+    flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
     mesh_descriptors = {
         (1, 1): "n150_mesh_graph_descriptor.textproto",
         (2, 1): "n300_mesh_graph_descriptor.textproto",
@@ -288,7 +289,11 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         # logically as a 4x1 sequence-parallel Ring.
         (4, 1): "n300_2x2_mesh_graph_descriptor.textproto",
         (2, 4): "t3k_mesh_graph_descriptor.textproto",
-        (1, 8): "bh_galaxy_flux3_tp8_line.textproto",
+        (1, 8): (
+            "bh_galaxy_flux3_tp8_ring.textproto"
+            if flux3_profile in {"tp8ring", "tp8-ring", "pure-tp8-ring", "pure_tp8_ring"}
+            else "bh_galaxy_flux3_tp8_line.textproto"
+        ),
     }
 
     descriptor = mesh_descriptors.get(settings.device_mesh_shape)

@@ -361,7 +361,13 @@ class Settings(BaseSettings):
                     "Running Galaxy FLUX.3 TP8 device discovery "
                     "(one topology-local 8-chip line per worker)..."
                 )
-                devices = dm.get_device_groups_of_eight()
+                ring_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower() in {
+                    "tp8ring",
+                    "tp8-ring",
+                    "pure-tp8-ring",
+                    "pure_tp8_ring",
+                }
+                devices = dm.get_flux3_sp8_groups() if ring_profile else dm.get_device_groups_of_eight()
                 logger.info(
                     f"Galaxy TP8 discovery returned {len(devices) if devices else 0} groups"
                 )
@@ -472,12 +478,16 @@ class Settings(BaseSettings):
                 "tp-8": "tp8",
                 "pure-tp8": "tp8",
                 "pure_tp8": "tp8",
+                "tp8ring": "tp8ring",
+                "tp8-ring": "tp8ring",
+                "pure-tp8-ring": "tp8ring",
+                "pure_tp8_ring": "tp8ring",
             }
             try:
                 flux3_profile = aliases[flux3_profile]
             except KeyError as exc:
                 raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, sp8, tp8, tp2sp4, tp4sp2, or sp8tp4"
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, sp2, sp4, sp8, tp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
                 ) from exc
             profile_meshes = {
                 "legacy-single": (1, 1),
@@ -490,6 +500,7 @@ class Settings(BaseSettings):
                 # Pure TP8: hidden/head channels are sharded on the 8-wide
                 # line; this is intentionally not the SP8 (8,1) Ring.
                 "tp8": (1, 8),
+                "tp8ring": (1, 8),
                 # One eight-chip tray: TP2 on axis 0 and SP4 on axis 1.
                 "tp2sp4": (2, 4),
                 # Transposed tray axes: TP4 on axis 0 and SP2 on axis 1.
@@ -502,6 +513,7 @@ class Settings(BaseSettings):
                 "sp4": 1,
                 "sp8": 1,
                 "tp8": 8,
+                "tp8ring": 8,
                 "tp2sp4": 2,
                 "tp4sp2": 4,
                 "sp8tp4": 4,
@@ -518,7 +530,7 @@ class Settings(BaseSettings):
             # Start the four TP1xSP8 Rings at a bounded, fixed interval.
             # FLUX3_SP8_STARTUP_MODE=ready can opt into the predecessor-ready
             # barrier for environments that need the conservative policy.
-            if flux3_profile in {"sp8", "tp8"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
+            if flux3_profile in {"sp8", "tp8", "tp8ring"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
                 self.new_device_delay_seconds = 10
                 logger.info(
                     f"Applied FLUX.3 {flux3_profile.upper()} fixed worker-start delay: 10 seconds"
