@@ -61,9 +61,10 @@ belong to the pre-fix attempt.
 ## Source versions
 
 ```text
-TL-inference-server commit: 55efc927
-tt-metal commit:            fe56709ca9
-tag:                         flux3-parentmesh-tp8ring-v0.1.0
+TL-inference-server code commit: 55efc927
+TL-inference-server final HEAD:  7abaf571
+tt-metal commit:                 fe56709ca9
+tag:                              flux3-parentmesh-tp8ring-v0.1.0
 ```
 
 The current `tt-metal` main reference inspected on Galaxy03 was
