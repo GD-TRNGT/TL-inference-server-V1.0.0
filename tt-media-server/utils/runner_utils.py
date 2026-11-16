@@ -308,6 +308,7 @@ def _setup_grid_override(device: str):
     if (
         device == DeviceTypes.BLACKHOLE_GALAXY.value
         or device == DeviceTypes.GALAXY.value
+        or settings.is_galaxy
     ):
         flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
         flux3_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
