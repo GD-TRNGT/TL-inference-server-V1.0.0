@@ -365,7 +365,7 @@ class Settings(BaseSettings):
             "sp-4": "sp4",
             "tp-4": "tp4",
         }.get(flux3_profile, flux3_profile)
-        parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "parent").strip().lower()
+        parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "direct" if flux3_profile in {"sp4", "sp4axis1"} else "parent").strip().lower()
         # Make the SD3.5-style parent/child path automatic for four-chip
         # FLUX3 workers.  Settings is constructed before worker_utils calls
         # setup_runner_environment(), so the parent shape must be exported
@@ -383,7 +383,7 @@ class Settings(BaseSettings):
             and mesh in ((4, 1), (1, 4), (2, 4), (8, 1), (1, 8))
             and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
             in {"4x8", "8x4"}
-            and os.environ.get("FLUX3_PARENT_MESH_MODE", "parent").strip().lower()
+            and os.environ.get("FLUX3_PARENT_MESH_MODE", "direct" if flux3_profile in {"sp4", "sp4axis1"} else "parent").strip().lower()
             not in {"0", "false", "off", "direct", "legacy"}
         )
         if parent_submesh:
