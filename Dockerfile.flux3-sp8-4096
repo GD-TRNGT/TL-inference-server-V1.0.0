@@ -129,6 +129,8 @@ COPY --from=ttmetal . ${TT_METAL_HOME}
 # The resulting image is unchanged -- this only lowers disk during the build.
 RUN cd ${TT_METAL_HOME} \
     && test -f ./install_dependencies.sh \
+    && git tag -a -f v1.0.24 -m flux3-sd35-aligned-build HEAD >/dev/null 2>&1 \
+    && git describe --first-parent --dirty=-dirty \
     && ./install_dependencies.sh --docker \
     # Older pinned tt-metal commits (e.g. BGE's 65718bb) predate create_venv.sh's
     # --bundle-python flag and exit 1 on unknown arguments, so only pass it when
@@ -147,9 +149,15 @@ RUN cd ${TT_METAL_HOME} \
     && cmake --build build_Release --target test_system_health -j$(nproc) \
     && uv pip install --upgrade cmake \
     && hash -r \
+    && mkdir -p /tmp/tt-metal-physical-groupings \
+    && cp tests/tt_metal/tt_fabric/physical_groupings/wh_bh_rev_c_galaxy_physical_grouping_descriptor.textproto /tmp/tt-metal-physical-groupings/ \
+    && cp tests/tt_metal/tt_fabric/physical_groupings/default_physical_grouping_descriptor.textproto /tmp/tt-metal-physical-groupings/ \
     && rm -rf ${TT_METAL_HOME}/.cpmcache \
     && rm -rf ${TT_METAL_HOME}/docs \
     && rm -rf ${TT_METAL_HOME}/tests \
+    && mkdir -p ${TT_METAL_HOME}/tests/tt_metal/tt_fabric/physical_groupings \
+    && mv /tmp/tt-metal-physical-groupings/*.textproto ${TT_METAL_HOME}/tests/tt_metal/tt_fabric/physical_groupings/ \
+    && rmdir /tmp/tt-metal-physical-groupings \
     && rm -rf ${TT_METAL_HOME}/tech_reports \
     && rm -rf ${TT_METAL_HOME}/contributing \
     && rm -rf ${TT_METAL_HOME}/releases \
@@ -335,6 +343,7 @@ ENV FLUXCACHE_DIR=${FLUXCACHE_DIR} \
     FLUX3_REFERENCE_ENCODER_BACKEND=ttnn \
     TT_METAL_CACHE=${FLUXCACHE_DIR}/tt-metal-cache \
     TT_METAL_KERNEL_CACHE_PATH=${FLUXCACHE_DIR}/tt-metal-cache \
+    TT_METAL_PHYSICAL_GROUPING_DESCRIPTOR_PATH=${TT_METAL_HOME}/tests/tt_metal/tt_fabric/physical_groupings/wh_bh_rev_c_galaxy_physical_grouping_descriptor.textproto \
     TT_DIT_CACHE_DIR=${FLUXCACHE_DIR}/tt_dit_cache \
     XDG_CACHE_HOME=${FLUXCACHE_DIR}/xdg \
     HF_HOME=${FLUXCACHE_DIR}/hf \
