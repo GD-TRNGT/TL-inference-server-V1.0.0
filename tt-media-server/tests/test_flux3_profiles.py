@@ -44,3 +44,12 @@ def test_aliases_are_canonical():
     assert canonical_profile_name("sp4-tp2") == "tp2sp4"
     assert canonical_profile_name("pure_tp8_ring") == "tp8ring"
     assert get_flux3_profile("tp4-axis1").worker_mesh == (1, 4)
+
+
+@pytest.mark.parametrize("name", ["tp2", "tp2linear"])
+def test_pure_tp2_profiles_use_matching_linear_transport(name):
+    profile = get_flux3_profile(name)
+    assert profile.worker_mesh == (2, 1)
+    assert profile.pipeline_topology == "linear"
+    assert profile.fabric_config == "1d"
+    assert profile.num_links == 1

@@ -53,10 +53,19 @@ _PROFILES = {
         "sp2", (2, 1), None, (1, 1), (2, 0), "linear", "1d_ring", 1, True
     ),
     "tp2": Flux3Profile(
-        "tp2", (2, 1), None, (2, 0), (1, 0), "ring", "1d_ring", 2, True
+        # A 2x1 Galaxy child is a line, not a valid 1D ring axis for the
+        # native Fabric configuration.  The old Ring/FABRIC_1D_RING pair
+        # initialized the device but stalled during the first warmup.
+        # Keep pure TP2 on the reliable linear path; TP2 still shards the
+        # hidden dimension across axis 0.
+        "tp2", (2, 1), None, (2, 0), (1, 0), "linear", "1d", 1, True
     ),
     "tp2linear": Flux3Profile(
-        "tp2linear", (2, 1), None, (2, 0), (1, 0), "ring", "1d", 2, True
+        # This profile was accidentally declared as Ring while selecting a
+        # linear Fabric descriptor.  That topology/Fabric mismatch caused the
+        # same warmup hang as tp2.  Both explicit TP2 profiles now describe
+        # the actual 2x1 Linear execution path.
+        "tp2linear", (2, 1), None, (2, 0), (1, 0), "linear", "1d", 1, True
     ),
     "sp4": Flux3Profile(
         "sp4", (4, 1), (4, 8), (1, 1), (4, 0), "ring", "1d_ring", 2, True
