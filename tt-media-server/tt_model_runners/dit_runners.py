@@ -996,6 +996,15 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 f"Device {self.device_id}: upstream FLUX.3 Klein timings_s={result.timings}, "
                 f"cached_steps={result.cached_steps}, prompt_upsampler=disabled"
             )
+            if os.environ.get("FLUX3_PROFILE_STAGES", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                self.logger.info(
+                    f"Device {self.device_id}: upstream FLUX.3 Klein step_times_s={result.step_times_s}"
+                )
             return [result.image]
         request = requests[0]
         height = request.height or 1024
