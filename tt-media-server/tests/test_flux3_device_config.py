@@ -23,7 +23,9 @@ def test_flux3_legacy_profile_uses_distinct_factor_one_axes(monkeypatch):
     monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "legacy-single")
     runner = _legacy_runner_for_device_params()
     assert _flux3_parallel_factors((1, 1)) == ((1, 1), (1, 0))
-    assert runner._uses_klein_pipeline()
+    # TP1xSP1 intentionally stays on the established non-Klein FLUX3 T2I
+    # path; the resident Klein pipeline starts at SP2 and above.
+    assert not runner._uses_klein_pipeline()
 
 def test_flux3_tp2sp4_profile_uses_2d_tensor_and_sequence_parallelism(monkeypatch):
     monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "tp2sp4")
