@@ -254,10 +254,13 @@ class Settings(BaseSettings):
             and parent_mode == "parent"
         ):
             os.environ.setdefault("FLUX3_PARENT_MESH_SHAPE", parent_spec[1])
-            os.environ.setdefault("FLUX3_PARENT_MESH_WORKERS", "4")
+            # A parent mesh is process-global on Galaxy.  One process owns the
+            # complete parent and selects one child; independent workers use
+            # direct mode instead.
+            os.environ.setdefault("FLUX3_PARENT_MESH_WORKERS", "1")
             logger.info(
                 f"Enabled FLUX3 {flux3_profile.upper()} parent mesh: "
-                f"parent={parent_spec[1]}, child={parent_spec[0]}, workers=4"
+                f"parent={parent_spec[1]}, child={parent_spec[0]}, workers=1"
             )
 
         if self.model_service is None:
