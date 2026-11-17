@@ -25,6 +25,7 @@ TT_METAL_HOME_ENV = "TT_METAL_HOME"
 TT_SMI_TIMEOUT = int(os.environ.get("TT_SMI_TIMEOUT", "30"))
 SYSTEM_HEALTH_TIMEOUT = int(os.environ.get("TT_SYSTEM_HEALTH_TIMEOUT", "60"))
 SYSTEM_HEALTH_RELATIVE_PATH = "build/test/tt_metal/tt_fabric/test_system_health"
+SYSTEM_HEALTH_RELEASE_RELATIVE_PATH = "build_Release/test/tt_metal/tt_fabric/test_system_health"
 SYSTEM_HEALTH_GTEST_FILTER = "Cluster.ReportSystemHealth"
 N_PER_TRAY = 8
 N_LOC_PAIRS = (("1", "2"), ("3", "4"), ("5", "6"), ("7", "8"))
@@ -273,7 +274,9 @@ class DeviceManager:
         binary = self._resolve_binary()
         result = self._exec_system_health(binary)
 
-        output = result.stdout or ""
+        # UMD/gtest health reports are emitted on stderr by the current
+        # Blackhole build; merge both streams before parsing chip records.
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
         if not output:
             raise DeviceDiscoveryError("test_system_health: no output")
 
@@ -362,7 +365,16 @@ class DeviceManager:
             return env_binary
         home = os.environ.get(TT_METAL_HOME_ENV)
         if home:
-            return os.path.join(home, SYSTEM_HEALTH_RELATIVE_PATH)
+            candidates = (
+                os.path.join(home, SYSTEM_HEALTH_RELATIVE_PATH),
+                os.path.join(home, SYSTEM_HEALTH_RELEASE_RELATIVE_PATH),
+            )
+            for candidate in candidates:
+                if os.path.isfile(candidate):
+                    return candidate
+            # Preserve the historical error path when neither build layout
+            # exists; the subprocess wrapper will report the missing binary.
+            return candidates[0]
         return os.path.join(".", SYSTEM_HEALTH_RELATIVE_PATH)
 
     @staticmethod

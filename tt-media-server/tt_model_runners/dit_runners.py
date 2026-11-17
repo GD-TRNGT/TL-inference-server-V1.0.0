@@ -815,6 +815,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             # algorithms; the other profiles below have verified Ring paths.
             is_ring_mesh = self._execution_profile == "tp2" or mesh_shape in {
                 (4, 1),
+                (1, 4),
                 (8, 1),
                 (4, 8),
             }

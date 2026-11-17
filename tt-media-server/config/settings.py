@@ -365,7 +365,7 @@ class Settings(BaseSettings):
             "sp-4": "sp4",
             "tp-4": "tp4",
         }.get(flux3_profile, flux3_profile)
-        parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "direct" if flux3_profile in {"sp4", "sp4axis1"} else "parent").strip().lower()
+        parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "direct" if flux3_profile == "sp4" else "parent").strip().lower()
         # Make the SD3.5-style parent/child path automatic for four-chip
         # FLUX3 workers.  Settings is constructed before worker_utils calls
         # setup_runner_environment(), so the parent shape must be exported
@@ -383,7 +383,7 @@ class Settings(BaseSettings):
             and mesh in ((4, 1), (1, 4), (2, 4), (8, 1), (1, 8))
             and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
             in {"4x8", "8x4"}
-            and os.environ.get("FLUX3_PARENT_MESH_MODE", "direct" if flux3_profile in {"sp4", "sp4axis1"} else "parent").strip().lower()
+            and os.environ.get("FLUX3_PARENT_MESH_MODE", "direct" if flux3_profile == "sp4" else "parent").strip().lower()
             not in {"0", "false", "off", "direct", "legacy"}
         )
         if parent_submesh:
@@ -503,7 +503,7 @@ class Settings(BaseSettings):
                     )
 
         except Exception as e:
-            if mesh in ((2, 1), (1, 4), (1, 8), (2, 4), (4, 2), (8, 1), (4, 8)):
+            if mesh in ((2, 1), (1, 4), (4, 1), (1, 8), (2, 4), (4, 2), (8, 1), (4, 8)):
 
                 raise RuntimeError(
                     f"Device discovery failed for mesh {mesh}: {e}. "
@@ -731,18 +731,17 @@ class Settings(BaseSettings):
             os.environ["FLUX3_TP_SIZE"] = str(expected_tp)
             os.environ["FLUX3_TP_MESH"] = f"{expected_mesh[0]}x{expected_mesh[1]}"
             os.environ["FLUX3_PARALLELISM"] = canonical_parallelism
-            # Start the four TP1xSP8 Rings at a bounded, fixed interval.
-            # FLUX3_SP8_STARTUP_MODE=ready can opt into the predecessor-ready
-            # barrier for environments that need the conservative policy.
-            if flux3_profile in {"sp8", "tp8ring"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
+            # Galaxy workers must not initialize concurrently.  TT-Metal's
+            # Inspector/MPI bootstrap uses process-global resources on the
+            # host, so starting eight SP4 workers back-to-back can make them
+            # race before the device runtime is ready.  Use a fixed
+            # start-to-start interval for every multi-chip FLUX.3 profile;
+            # one-worker profiles are unaffected because there is no next
+            # worker to delay.
+            if flux3_profile != "legacy-single" and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
                 self.new_device_delay_seconds = 10
                 logger.info(
                     f"Applied FLUX.3 {flux3_profile.upper()} fixed worker-start delay: 10 seconds"
-                )
-            elif flux3_profile in {"tp2sp2", "tp2sp4", "tp4sp2"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
-                self.new_device_delay_seconds = 120
-                logger.info(
-                    "Applied FLUX.3 eight-chip default worker-start delay: 120 seconds"
                 )
             logger.info(
                 f"Applied FLUX.3 execution profile {flux3_profile}: "

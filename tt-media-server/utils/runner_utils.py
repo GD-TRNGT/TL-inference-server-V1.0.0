@@ -50,6 +50,39 @@ def setup_runner_environment(
             f"setup_runner_environment: TT_VISIBLE_DEVICES={visible_device_id}"
         )
 
+        if (
+            settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and settings.is_galaxy
+        ):
+            # Every worker in a Galaxy container is a separate Python
+            # process.  TT-Metal Inspector RPC defaults to localhost:50051;
+            # leaving it enabled makes all workers contend for that one
+            # socket and can crash an MPI child during startup.  Keep the
+            # diagnostic path opt-in, and isolate the filesystem logs even
+            # when Inspector itself is enabled.
+            if os.environ.get("FLUX3_ENABLE_INSPECTOR_RPC", "0") != "1":
+                os.environ["TT_METAL_INSPECTOR_RPC"] = "0"
+                _logger.info(
+                    "setup_runner_environment: disabled TT-Metal Inspector RPC "
+                    "for multi-process FLUX.3 Galaxy workers"
+                )
+
+            worker_name = (
+                visible_device_id.replace(",", "-")
+                .replace("(", "")
+                .replace(")", "")
+            )
+            if submesh_marker in str(device_id):
+                worker_name += f"_submesh{submesh_index}"
+            logs_root = os.environ.get("TT_METAL_LOGS_PATH")
+            if logs_root:
+                worker_logs = os.path.join(logs_root, "flux3", worker_name)
+                os.makedirs(worker_logs, exist_ok=True)
+                os.environ["TT_METAL_LOGS_PATH"] = worker_logs
+                _logger.info(
+                    f"setup_runner_environment: TT_METAL_LOGS_PATH={worker_logs}"
+                )
+
     if (
         device_id
         and device_id != "-1"
@@ -70,7 +103,7 @@ def setup_runner_environment(
                 os.environ.get("CACHE_ROOT", os.path.expanduser("~/.cache")),
                 "tt-metal-built",
             )
-        worker_name = visible_device_id.replace(",", "_").replace("(", "").replace(")", "")
+        worker_name = visible_device_id.replace(",", "-").replace("(", "").replace(")", "")
         if submesh_marker in str(device_id):
             worker_name += f"_submesh{submesh_index}"
         worker_cache = os.path.join(cache_root, worker_name)
@@ -476,8 +509,22 @@ def _setup_grid_override(device: str):
             # TT-Metal encodes the maximum core coordinate.  ``11,9`` is
             # therefore the full physical 12x10 Blackhole worker grid.  Keep
             # this layout identical for TP1xSP1 and all SP/TP profiles.
-            expected = "11,9"
-            effective_grid = "12x10"
+            requested_grid = os.environ.get("FLUX3_CORE_GRID_OVERRIDE", "").strip().lower().replace(" ", "")
+            grid_aliases = {
+                "8x8": "7,7",
+                "12x9": "11,8",
+                "12x10": "11,9",
+            }
+            expected = grid_aliases.get(requested_grid, requested_grid or "11,9")
+            if "x" in expected:
+                width, height = expected.split("x", 1)
+                expected = f"{int(width) - 1},{int(height) - 1}"
+            if not all(part.isdigit() for part in expected.split(",")) or expected.count(",") != 1:
+                raise ValueError(
+                    "FLUX3_CORE_GRID_OVERRIDE must be WIDTHxHEIGHT or X,Y, "
+                    f"got {requested_grid!r}"
+                )
+            effective_grid = requested_grid or "12x10"
         else:
             expected = "7,7" if device == DeviceTypes.GALAXY.value else "10,9"
             effective_grid = None
