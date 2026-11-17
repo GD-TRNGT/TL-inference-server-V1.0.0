@@ -223,12 +223,16 @@ class Settings(BaseSettings):
         flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
         flux3_parent_layouts = {
             "tp2sp4": ((2, 4), "8x4"),
+            "tp2sp2": ((2, 2), "8x4"),
             "tp4axis1": ((1, 4), "4x8"),
             "sp8": ((8, 1), "8x4"),
             "tp8ring": ((1, 8), "4x8"),
         }
         flux3_profile = {
             "tp2-sp4": "tp2sp4",
+            "tp2-sp2": "tp2sp2",
+            "sp2tp2": "tp2sp2",
+            "sp2-tp2": "tp2sp2",
             "sp4tp2": "tp2sp4",
             "sp4-tp2": "tp2sp4",
             "tp8-ring": "tp8ring",
@@ -590,6 +594,10 @@ class Settings(BaseSettings):
                 "tp2-sp4": "tp2sp4",
                 "sp4tp2": "tp2sp4",
                 "sp4-tp2": "tp2sp4",
+                "tp2sp2": "tp2sp2",
+                "tp2-sp2": "tp2sp2",
+                "sp2tp2": "tp2sp2",
+                "sp2-tp2": "tp2sp2",
                 "tp4sp2": "tp4sp2",
                 "tp4-sp2": "tp4sp2",
                 "sp2tp4": "tp4sp2",
@@ -597,6 +605,7 @@ class Settings(BaseSettings):
                 "sp8tp4": "sp8tp4",
                 "sp8-tp4": "sp8tp4",
                 "tp8ring": "tp8ring",
+                "tp2sp2": "tp2sp2",
                 "tp8-ring": "tp8ring",
                 "pure-tp8-ring": "tp8ring",
                 "pure_tp8_ring": "tp8ring",
@@ -609,7 +618,7 @@ class Settings(BaseSettings):
                 flux3_profile = aliases[flux3_profile]
             except KeyError as exc:
                 raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp2linear, tp4, tp4axis1, sp2, sp4, sp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
+                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp2linear, tp4, tp4axis1, sp2, sp4, sp8, tp8ring, tp2sp2, tp2sp4, tp4sp2, or sp8tp4"
                 ) from exc
             profile_meshes = {
                 "legacy-single": (1, 1),
@@ -624,6 +633,7 @@ class Settings(BaseSettings):
                 # replicated; image-token rows are split over its 8-chip Ring.
                 "sp8": (8, 1),
                 "tp8ring": (1, 8),
+                "tp2sp2": (2, 2),
                 # One eight-chip tray: TP2 on axis 0 and SP4 on axis 1.
                 "tp2sp4": (2, 4),
                 # Transposed tray axes: TP4 on axis 0 and SP2 on axis 1.
@@ -640,6 +650,7 @@ class Settings(BaseSettings):
                 "sp4": 1,
                 "sp8": 1,
                 "tp8ring": 8,
+                "tp2sp2": 2,
                 "tp2sp4": 2,
                 "tp4sp2": 4,
                 "sp8tp4": 4,
@@ -654,6 +665,7 @@ class Settings(BaseSettings):
                 "sp4": "sp4",
                 "sp8": "sp8",
                 "tp8ring": "tp8ring",
+                "tp2sp2": "tp2sp2",
                 "tp2sp4": "tp2sp4",
                 "tp4sp2": "tp4sp2",
                 "sp8tp4": "sp8tp4",
@@ -696,6 +708,8 @@ class Settings(BaseSettings):
                     "pure_tp8_ring": "tp8ring",
                     "tp2-sp4": "tp2sp4",
                     "sp4-tp2": "tp2sp4",
+                    "tp2-sp2": "tp2sp2",
+                    "sp2-tp2": "tp2sp2",
                     "tp4-sp2": "tp4sp2",
                     "sp2-tp4": "tp4sp2",
                     "sp8-tp4": "sp8tp4",
@@ -725,7 +739,7 @@ class Settings(BaseSettings):
                 logger.info(
                     f"Applied FLUX.3 {flux3_profile.upper()} fixed worker-start delay: 10 seconds"
                 )
-            elif flux3_profile in {"tp2sp4", "tp4sp2"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
+            elif flux3_profile in {"tp2sp2", "tp2sp4", "tp4sp2"} and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
                 self.new_device_delay_seconds = 120
                 logger.info(
                     "Applied FLUX.3 eight-chip default worker-start delay: 120 seconds"

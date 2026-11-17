@@ -159,6 +159,10 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         flux3_profile in {"tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4"}
         or (flux3_profile in {"", "auto"} and flux3_parallelism == "tp4sp2")
     )
+    is_flux3_tp2sp2 = (
+        flux3_profile in {"tp2sp2", "tp2-sp2", "sp2tp2", "sp2-tp2"}
+        or (flux3_profile in {"", "auto"} and flux3_parallelism == "tp2sp2")
+    )
     parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "direct").strip().lower()
     flux3_parent_specs = {
         # Match the SD3.5 Galaxy implementation: open the complete physical
@@ -179,6 +183,11 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         "tp4axis1": {
             "child": (1, 4),
             "shape": "4x8",
+            "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
+        },
+        "tp2sp2": {
+            "child": (2, 2),
+            "shape": "8x4",
             "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
         },
         "tp2sp4": {
@@ -204,6 +213,9 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         "sp-4": "sp4",
         "tp-4": "tp4",
         "tp2-sp4": "tp2sp4",
+        "tp2-sp2": "tp2sp2",
+        "sp2tp2": "tp2sp2",
+        "sp2-tp2": "tp2sp2",
         "sp4tp2": "tp2sp4",
         "sp4-tp2": "tp2sp4",
         "tp8-ring": "tp8ring",
@@ -220,10 +232,10 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         and parent_mode == "parent"
     )
     is_flux3_sequence_parallel = (
-        flux3_profile in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "tp2sp4", "tp2-sp4", "sp4tp2", "sp4-tp2", "tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4", "sp8tp4", "sp8-tp4"}
+        flux3_profile in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "tp2sp2", "tp2-sp2", "sp2tp2", "sp2-tp2", "tp2sp4", "tp2-sp4", "sp4tp2", "sp4-tp2", "tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4", "sp8tp4", "sp8-tp4"}
         or (
             flux3_profile in {"", "auto"}
-            and flux3_parallelism in {"sp", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
+            and flux3_parallelism in {"sp", "sp4", "sp8", "tp2sp2", "tp2sp4", "tp4sp2", "sp8tp4"}
         )
     )
     if (
@@ -431,6 +443,7 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         # logically as a 4x1 sequence-parallel Ring.
         (4, 1): "n300_2x2_mesh_graph_descriptor.textproto",
         (2, 4): "t3k_mesh_graph_descriptor.textproto",
+        (2, 2): "bh_galaxy_flux3_tp2sp2_mesh.textproto",
         (1, 8): "bh_galaxy_flux3_tp8_ring.textproto",
         (8, 1): "bh_galaxy_flux3_sp8_ring.textproto",
     }
@@ -453,10 +466,10 @@ def _setup_grid_override(device: str):
         flux3_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
         is_flux3_sequence_parallel = (
             flux3_profile
-            in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "tp2sp4", "tp2-sp4", "sp4tp2", "sp4-tp2", "tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4", "sp8tp4", "sp8-tp4"}
+            in {"sp2", "sp4", "sp-4", "sp8", "sp-8", "tp2sp2", "tp2-sp2", "sp2tp2", "sp2-tp2", "tp2sp4", "tp2-sp4", "sp4tp2", "sp4-tp2", "tp4sp2", "tp4-sp2", "sp8tp4", "sp8-tp4"}
             or (
                 flux3_profile in {"", "auto"}
-                and flux3_parallelism in {"sp", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
+                and flux3_parallelism in {"sp", "sp4", "sp8", "tp2sp2", "tp2sp4", "tp4sp2", "sp8tp4"}
             )
         )
         if settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value:

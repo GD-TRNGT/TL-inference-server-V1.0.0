@@ -542,6 +542,10 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "sp-8": "sp8",
         "tp2sp4": "tp2sp4",
         "tp2-sp4": "tp2sp4",
+        "tp2sp2": "tp2sp2",
+        "tp2-sp2": "tp2sp2",
+        "sp2tp2": "tp2sp2",
+        "sp2-tp2": "tp2sp2",
         "sp4tp2": "tp2sp4",
         "sp4-tp2": "tp2sp4",
         "tp4sp2": "tp4sp2",
@@ -600,7 +604,7 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         profile = aliases[requested]
     except KeyError as exc:
         raise ValueError(
-            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp2linear, tp4, tp4axis1, sp2, sp4, sp8, tp8ring, tp2sp4, tp4sp2, or sp8tp4"
+            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp2linear, tp4, tp4axis1, sp2, sp4, sp8, tp8ring, tp2sp2, tp2sp4, tp4sp2, or sp8tp4"
         ) from exc
     expected_mesh = {
         "legacy-single": (1, 1),
@@ -612,6 +616,7 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "sp4": (4, 1),
         "sp8": (8, 1),
         "tp8ring": (1, 8),
+        "tp2sp2": (2, 2),
         "tp2sp4": (2, 4),
         "tp4sp2": (4, 2),
         "sp8tp4": (4, 8),
@@ -629,7 +634,7 @@ def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
     profile = _flux3_execution_profile(normalized)
     if profile in {"legacy-single", "sp2", "sp4", "sp8"}:
         return 1
-    if profile in {"tp2", "tp2linear"}:
+    if profile in {"tp2", "tp2linear", "tp2sp2"}:
         return 2
     if profile == "tp4":
         return 4
@@ -701,6 +706,8 @@ def _flux3_parallel_factors(
         # A 2x4 tray mesh: tensor-parallel weights on axis 0 and image-token
         # sequence parallelism on the physical four-chip line at axis 1.
         return ((2, 0), (4, 1))
+    if profile == "tp2sp2":
+        return ((2, 0), (2, 1))
     if profile == "tp4sp2":
         # Transpose the physical tray axes: TP4 uses the four-chip line and
         # SP2 partitions image-token rows over the two-chip line.
@@ -795,7 +802,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         # buckets text to 1024 rows for ring SDPA; that padding requires SP
         # masking and is not valid for its non-SP attention branch. The
         # legacy path supplies matching non-SP masking and image references.
-        return self._execution_profile in {"tp2", "tp2linear", "sp2", "sp4", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}
+        return self._execution_profile in {"tp2", "tp2linear", "sp2", "sp4", "sp8", "tp2sp2", "tp2sp4", "tp4sp2", "sp8tp4"}
 
     def create_pipeline(self):
         if self._uses_klein_pipeline():
@@ -821,7 +828,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             )
             default_sizes = (
                 (1024, 2048)
-                if self._execution_profile in {"tp2sp4", "tp4sp2"}
+                if self._execution_profile in {"tp2sp2", "tp2sp4", "tp4sp2"}
                 else (1024, 2048, 4096)
             )
             # An explicit list bounds startup warmup only. It must not narrow
