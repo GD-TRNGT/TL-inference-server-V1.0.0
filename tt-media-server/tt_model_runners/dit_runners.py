@@ -30,6 +30,7 @@ from config.constants import (
     wan22_target_resolution,
 )
 from config.settings import get_settings
+from config.flux3_profiles import resolve_flux3_profile
 from domain.image_generate_request import ImageGenerateRequest
 from domain.video_generate_request import VideoGenerateRequest
 from domain.video_i2v_generate_request import ImagePromptEntry, VideoI2VGenerateRequest
@@ -782,9 +783,10 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 "FLUX3_COMPONENT_RESIDENCY must be 'resident' or 'per_request', "
                 f"got {self._component_residency!r}"
             )
-        self._execution_profile = _flux3_execution_profile(
+        self._flux3_profile = resolve_flux3_profile(
             tuple(self.settings.device_mesh_shape)
         )
+        self._execution_profile = self._flux3_profile.name
         model_hint = os.environ.get("FLUX3_MODEL_VARIANT", "").strip().lower()
         if not model_hint:
             model_hint = (
@@ -795,32 +797,27 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         if model_hint not in {"distilled", "base"}:
             raise ValueError("FLUX3_MODEL_VARIANT must be 'distilled' or 'base'")
         self._klein_model = model_hint
-        self._tp_degree = _flux3_tp_degree(self.settings.device_mesh_shape)
+        self._tp_degree = self._flux3_profile.tp_degree
 
     def _uses_klein_pipeline(self) -> bool:
-        # TP1xSP1 uses the established FLUX3 T2I path. The Klein pipeline
-        # buckets text to 1024 rows for ring SDPA; that padding requires SP
-        # masking and is not valid for its non-SP attention branch. The
-        # legacy path supplies matching non-SP masking and image references.
-        return self._execution_profile in {"tp2", "tp2linear", "sp2", "sp4", "sp8", "tp2sp2", "tp2sp4", "tp4sp2", "sp8tp4"}
+        profile = getattr(self, "_flux3_profile", None)
+        if profile is None:
+            profile = resolve_flux3_profile(tuple(self.settings.device_mesh_shape))
+        return profile.uses_klein_pipeline
 
     def create_pipeline(self):
         if self._uses_klein_pipeline():
             mesh_shape = tuple(self.ttnn_device.shape)
             if self._component_residency != "resident":
                 raise ValueError("The upstream FLUX.3 Klein path requires resident components")
-            tp_factor, sp_factor = _flux3_parallel_factors(mesh_shape)
-            # A Galaxy tray exposes a physical 2x4 mesh, not a torus. Its
-            # TP2xSP4 collectives must therefore use the linear 2D-fabric
-            # algorithms; the other profiles below have verified Ring paths.
-            is_ring_mesh = self._execution_profile == "tp2" or mesh_shape in {
-                (4, 1),
-                (1, 4),
-                (8, 1),
-                (4, 8),
-            }
-            topology = ttnn.Topology.Ring if is_ring_mesh else ttnn.Topology.Linear
-            num_links = 2 if is_ring_mesh else 1
+            tp_factor = self._flux3_profile.tensor_parallel
+            sp_factor = self._flux3_profile.sequence_parallel
+            topology = (
+                ttnn.Topology.Ring
+                if self._flux3_profile.pipeline_topology == "ring"
+                else ttnn.Topology.Linear
+            )
+            num_links = self._flux3_profile.num_links
             weights_path = Path(_resolve_flux3_weights_path(self.settings.model_weights_path))
             self.logger.info(
                 f"Device {self.device_id}: loading upstream FLUX.3 Klein "
@@ -861,16 +858,15 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             if self._tp_degree > 2
             else ttnn.Topology.Linear
         )
-        _, sp_factor = _flux3_parallel_factors(self.settings.device_mesh_shape)
+        sp_factor = self._flux3_profile.sequence_parallel
         self._ccl_manager = CCLManager(
             self.ttnn_device,
             # Upstream's Galaxy 4x8 Ring configuration uses two CCL links.
             num_links=2 if self._tp_degree == 4 and sp_factor[0] == 8 else 1,
             topology=topology,
         )
-        tp_factor, sp_factor = _flux3_parallel_factors(
-            self.settings.device_mesh_shape
-        )
+        tp_factor = self._flux3_profile.tensor_parallel
+        sp_factor = self._flux3_profile.sequence_parallel
         self._dit_parallel = DiTParallelConfig.from_tuples(
             cfg=(1, 0),
             sp=sp_factor,
@@ -1071,6 +1067,10 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         return [result["image"]]
 
     def get_pipeline_device_params(self):
+        if not hasattr(self, "_flux3_profile"):
+            self._flux3_profile = resolve_flux3_profile(
+                tuple(self.settings.device_mesh_shape)
+            )
         if self._uses_klein_pipeline():
             mesh_shape = tuple(self.settings.device_mesh_shape)
             if mesh_shape == (1, 1):
@@ -1078,7 +1078,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                     "l1_small_size": int(os.environ.get("FLUX3_L1_SMALL_SIZE", "131072")),
                     "fabric_config": ttnn.FabricConfig.DISABLED,
                 }
-            if self._execution_profile in {"tp2sp4", "tp4sp2"}:
+            if self._flux3_profile.fabric_config == "2d":
                 return {
                     "l1_small_size": int(os.environ.get("FLUX3_L1_SMALL_SIZE", "131072")),
                     "fabric_config": ttnn.FabricConfig.FABRIC_2D,
@@ -1091,7 +1091,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                     "fabric_config": ttnn.FabricConfig.FABRIC_1D_RING,
                     "fabric_router_config": router_config,
                 }
-            if self._execution_profile == "tp2linear":
+            if self._flux3_profile.fabric_config == "1d":
                 return {
                     "l1_small_size": int(os.environ.get("FLUX3_L1_SMALL_SIZE", "131072")),
                     "fabric_config": ttnn.FabricConfig.FABRIC_1D,
@@ -1110,14 +1110,9 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         return {
             "l1_small_size": l1_small_size,
             "fabric_config": (
-                ttnn.FabricConfig.FABRIC_1D_RING
-                if self._execution_profile == "tp8ring"
+                ttnn.FabricConfig.DISABLED
+                if self._flux3_profile.fabric_config == "disabled"
                 else ttnn.FabricConfig.FABRIC_1D_RING
-                if (
-                    _flux3_tp_degree(self.settings.device_mesh_shape) > 1
-                    or _flux3_parallel_factors(self.settings.device_mesh_shape)[1][0] > 1
-                )
-                else ttnn.FabricConfig.DISABLED
             ),
         }
 

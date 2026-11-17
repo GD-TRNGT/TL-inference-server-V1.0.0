@@ -22,6 +22,7 @@ from config.constants import (
     SupportedModels,
 )
 from config.vllm_settings import VLLMSettings
+from config.flux3_profiles import get_flux3_profile, canonical_profile_name
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from utils.device_manager import DeviceManager
 from utils.logger import TTLogger
@@ -637,101 +638,11 @@ class Settings(BaseSettings):
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
             and flux3_profile not in {"", "auto"}
         ):
-            aliases = {
-                "legacy": "legacy-single",
-                "single": "legacy-single",
-                "single-card": "legacy-single",
-                "legacy-single": "legacy-single",
-                "sp2": "sp2",
-                "tp2": "tp2",
-                "tp2linear": "tp2linear",
-                "tp2-linear": "tp2linear",
-                "tp2_line": "tp2linear",
-                "sp4": "sp4",
-                "sp-4": "sp4",
-                "sp8": "sp8",
-                "sp-8": "sp8",
-                "tp2sp4": "tp2sp4",
-                "tp2-sp4": "tp2sp4",
-                "sp4tp2": "tp2sp4",
-                "sp4-tp2": "tp2sp4",
-                "tp2sp2": "tp2sp2",
-                "tp2-sp2": "tp2sp2",
-                "sp2tp2": "tp2sp2",
-                "sp2-tp2": "tp2sp2",
-                "tp4sp2": "tp4sp2",
-                "tp4-sp2": "tp4sp2",
-                "sp2tp4": "tp4sp2",
-                "sp2-tp4": "tp4sp2",
-                "sp8tp4": "sp8tp4",
-                "sp8-tp4": "sp8tp4",
-                "tp8ring": "tp8ring",
-                "tp2sp2": "tp2sp2",
-                "tp8-ring": "tp8ring",
-                "pure-tp8-ring": "tp8ring",
-                "pure_tp8_ring": "tp8ring",
-                "tp4": "tp4",
-                "tp4axis1": "tp4axis1",
-                "tp4-axis1": "tp4axis1",
-                "tp4_axis1": "tp4axis1",
-            }
-            try:
-                flux3_profile = aliases[flux3_profile]
-            except KeyError as exc:
-                raise ValueError(
-                    "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp2linear, tp4, tp4axis1, sp2, sp4, sp8, tp8ring, tp2sp2, tp2sp4, tp4sp2, or sp8tp4"
-                ) from exc
-            profile_meshes = {
-                "legacy-single": (1, 1),
-                "tp2": (2, 1),
-                "tp2linear": (2, 1),
-                "tp4": (4, 1),
-                "tp4axis1": (1, 4),
-                "sp2": (2, 1),
-                # Four replicas of the weights; image-token rows are split across the Ring.
-                "sp4": (4, 1),
-                # One topology-local Galaxy tray per worker. Weights are
-                # replicated; image-token rows are split over its 8-chip Ring.
-                "sp8": (8, 1),
-                "tp8ring": (1, 8),
-                "tp2sp2": (2, 2),
-                # One eight-chip tray: TP2 on axis 0 and SP4 on axis 1.
-                "tp2sp4": (2, 4),
-                # Transposed tray axes: TP4 on axis 0 and SP2 on axis 1.
-                "tp4sp2": (4, 2),
-                "sp8tp4": (4, 8),
-            }
-            expected_tp = {
-                "legacy-single": 1,
-                "tp2": 2,
-                "tp2linear": 2,
-                "tp4": 4,
-                "tp4axis1": 4,
-                "sp2": 1,
-                "sp4": 1,
-                "sp8": 1,
-                "tp8ring": 8,
-                "tp2sp2": 2,
-                "tp2sp4": 2,
-                "tp4sp2": 4,
-                "sp8tp4": 4,
-            }[flux3_profile]
-            canonical_parallelism = {
-                "legacy-single": "tp",
-                "tp2": "tp",
-                "tp2linear": "tp",
-                "tp4": "tp",
-                "tp4axis1": "tp",
-                "sp2": "sp",
-                "sp4": "sp4",
-                "sp8": "sp8",
-                "tp8ring": "tp8ring",
-                "tp2sp2": "tp2sp2",
-                "tp2sp4": "tp2sp4",
-                "tp4sp2": "tp4sp2",
-                "sp8tp4": "sp8tp4",
-            }[flux3_profile]
-            expected_mesh = profile_meshes[flux3_profile]
+            profile = get_flux3_profile(flux3_profile)
+            flux3_profile = profile.name
+            expected_tp = profile.tp_degree
+            expected_mesh = profile.worker_mesh
+            canonical_parallelism = profile.canonical_parallelism
 
             # FLUX3_EXECUTION_PROFILE is the canonical public setting.  The
             # older knobs remain accepted only as compatibility aliases, and
@@ -762,22 +673,8 @@ class Settings(BaseSettings):
             requested_parallelism = os.getenv("FLUX3_PARALLELISM")
             if requested_parallelism is not None:
                 normalized_parallelism = requested_parallelism.strip().lower()
-                parallelism_aliases = {
-                    "sp-4": "sp4",
-                    "tp8-ring": "tp8ring",
-                    "pure-tp8-ring": "tp8ring",
-                    "pure_tp8_ring": "tp8ring",
-                    "tp2-sp4": "tp2sp4",
-                    "sp4-tp2": "tp2sp4",
-                    "tp2-sp2": "tp2sp2",
-                    "sp2-tp2": "tp2sp2",
-                    "tp4-sp2": "tp4sp2",
-                    "sp2-tp4": "tp4sp2",
-                    "sp8-tp4": "sp8tp4",
-                }
-                normalized_parallelism = parallelism_aliases.get(
-                    normalized_parallelism, normalized_parallelism
-                )
+                if normalized_parallelism not in {"tp", "sp"}:
+                    normalized_parallelism = canonical_profile_name(normalized_parallelism)
                 if normalized_parallelism != canonical_parallelism:
                     raise ValueError(
                         f"FLUX3_EXECUTION_PROFILE={flux3_profile} requires "

@@ -6,6 +6,7 @@
 import os
 
 import ttnn
+from config.flux3_profiles import canonical_profile_name, get_flux3_profile
 from tt_model_runners.base_device_runner import BaseDeviceRunner
 
 
@@ -170,39 +171,21 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
         return None
 
     def _parent_mesh_shape(self):
-        """Return the opt-in parent mesh for a hybrid Galaxy worker."""
+        """Return the opt-in parent mesh for a hybrid Galaxy worker.
+
+        Profile metadata is owned by ``config.flux3_profiles`` so the base
+        device runner does not carry a second, diverging FLUX3 profile table.
+        """
         raw = os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
         child = tuple(self.settings.device_mesh_shape)
-        profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
-        profile = {
-            "sp-4": "sp4",
-            "tp-4": "tp4",
-            "tp4-axis1": "tp4axis1",
-            "tp4_axis1": "tp4axis1",
-            "tp2-sp4": "tp2sp4",
-            "tp2-sp2": "tp2sp2",
-            "sp2tp2": "tp2sp2",
-            "sp2-tp2": "tp2sp2",
-            "sp4tp2": "tp2sp4",
-            "sp4-tp2": "tp2sp4",
-            "tp4-sp2": "tp4sp2",
-            "sp2tp4": "tp4sp2",
-            "sp2-tp4": "tp4sp2",
-            "tp8-ring": "tp8ring",
-            "pure-tp8-ring": "tp8ring",
-            "pure_tp8_ring": "tp8ring",
-        }.get(profile, profile)
-        expected = {
-            "sp4": ((4, 1), (4, 8)),
-            "tp4": ((4, 1), (4, 8)),
-            "tp4axis1": ((1, 4), (4, 8)),
-            "tp2sp2": ((2, 2), (8, 4)),
-            "tp2sp4": ((2, 4), (8, 4)),
-            "tp4sp2": ((4, 2), (8, 4)),
-            "sp8": ((8, 1), (8, 4)),
-            "tp8ring": ((1, 8), (4, 8)),
-        }.get(profile)
-        if not raw or expected is None or child != expected[0]:
+        profile_name = canonical_profile_name(
+            os.environ.get("FLUX3_EXECUTION_PROFILE", "")
+        )
+        if profile_name == "auto":
+            return None
+        profile = get_flux3_profile(profile_name)
+        expected_parent = profile.parent_mesh
+        if not raw or expected_parent is None or child != profile.worker_mesh:
             return None
         try:
             rows, cols = (
@@ -218,10 +201,10 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
             raise RuntimeError(
                 f"Parent mesh {(rows, cols)} is smaller than child mesh {child}"
             )
-        if (rows, cols) != expected[1]:
+        if (rows, cols) != expected_parent:
             raise RuntimeError(
-                f"FLUX3_EXECUTION_PROFILE={profile} requires parent mesh "
-                f"{expected[1][0]}x{expected[1][1]}, got {raw!r}"
+                f"FLUX3_EXECUTION_PROFILE={profile.name} requires parent mesh "
+                f"{expected_parent[0]}x{expected_parent[1]}, got {raw!r}"
             )
         return (rows, cols)
 

@@ -5,20 +5,15 @@
 import json
 import os
 
-import json
-import os
-
 import numpy as np
+from config.constants import JobTypes
 from config.settings import settings
-from config.constants import JobTypes
-from config.constants import JobTypes
 from domain.image_generate_request import ImageGenerateRequest
 from model_services.base_service import BaseService
-from utils.job_manager import get_job_manager
-from utils.job_manager import get_job_manager
 from model_services.cpu_workload_handler import CpuWorkloadHandler
 from PIL import Image
 from telemetry.image_request_metrics import observe_image_request
+from utils.job_manager import get_job_manager
 
 
 def create_image_worker_context():
@@ -35,9 +30,9 @@ class ImageService(BaseService):
     def __init__(self):
         super().__init__()
         self._job_manager = get_job_manager()
-        self._job_output_dir = os.environ.get("IMAGE_JOB_OUTPUT_DIR", "/tmp/tt-media-server/image-jobs")
-        self._job_manager = get_job_manager()
-        self._job_output_dir = os.environ.get("IMAGE_JOB_OUTPUT_DIR", "/tmp/tt-media-server/image-jobs")
+        self._job_output_dir = os.environ.get(
+            "IMAGE_JOB_OUTPUT_DIR", "/tmp/tt-media-server/image-jobs"
+        )
 
         warmup_task_data = [Image.fromarray(np.zeros((64, 64, 3), dtype=np.uint8))]
         self._cpu_workload_handler = CpuWorkloadHandler(

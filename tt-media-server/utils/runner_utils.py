@@ -5,6 +5,7 @@
 import os
 
 from config.constants import DeviceTypes, ModelRunners
+from config.flux3_profiles import canonical_profile_name
 from config.settings import settings
 from telemetry.telemetry_client import get_telemetry_client
 
@@ -177,7 +178,9 @@ def _setup_blackhole_mesh_config(tt_metal_home: str):
 def _setup_galaxy_mesh_config(tt_metal_home: str):
     """Configure mesh graph descriptors for Galaxy hardware"""
     flux3_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
-    flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
+    flux3_profile = canonical_profile_name(
+        os.environ.get("FLUX3_EXECUTION_PROFILE", "auto")
+    )
     is_flux3_sp8tp4 = (
         flux3_profile in {"sp8tp4", "sp8-tp4"}
         or (flux3_profile in {"", "auto"} and flux3_parallelism == "sp8tp4")
@@ -249,24 +252,6 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
             "descriptor": "bh_galaxy_flux3_sp8tp4_ring.textproto",
         },
     }
-    flux3_profile = {
-        "sp-4": "sp4",
-        "tp-4": "tp4",
-        "tp2-sp4": "tp2sp4",
-        "tp2-sp2": "tp2sp2",
-        "sp2tp2": "tp2sp2",
-        "sp2-tp2": "tp2sp2",
-        "sp4tp2": "tp2sp4",
-        "sp4-tp2": "tp2sp4",
-        "tp4-sp2": "tp4sp2",
-        "sp2tp4": "tp4sp2",
-        "sp2-tp4": "tp4sp2",
-        "tp8-ring": "tp8ring",
-        "pure-tp8-ring": "tp8ring",
-        "pure_tp8_ring": "tp8ring",
-        "tp4-axis1": "tp4axis1",
-        "tp4_axis1": "tp4axis1",
-    }.get(flux3_profile, flux3_profile)
     parent_spec = flux3_parent_specs.get(flux3_profile)
     is_flux3_parent = (
         settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
