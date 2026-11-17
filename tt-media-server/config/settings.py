@@ -341,6 +341,37 @@ class Settings(BaseSettings):
         )
 
         if not self.is_galaxy:
+            # ``legacy-single`` intentionally keeps the normal single-device
+            # runner path, but FLUX.3 benchmark/deployment callers still need
+            # a way to select exactly one of the 32 discovered single-card
+            # workers.  Previously this early return made
+            # FLUX3_WORKER_GROUP_INDEX a no-op for the 1-card case.
+            worker_group_index = os.getenv("FLUX3_WORKER_GROUP_INDEX")
+            if (
+                self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+                and worker_group_index is not None
+                and os.getenv("FLUX3_EXECUTION_PROFILE", "legacy-single")
+                .strip()
+                .lower()
+                in {"", "auto", "legacy", "single", "single-card", "legacy-single"}
+            ):
+                try:
+                    group_index = int(worker_group_index)
+                except ValueError as exc:
+                    raise ValueError(
+                        "FLUX3_WORKER_GROUP_INDEX must be a non-negative integer"
+                    ) from exc
+                single_devices = DeviceManager().get_single_devices()
+                if group_index < 0 or group_index >= len(single_devices):
+                    raise ValueError(
+                        f"FLUX3_WORKER_GROUP_INDEX={group_index} is out of range "
+                        f"for {len(single_devices)} discovered single-card workers"
+                    )
+                self.device_ids = f"({single_devices[group_index]})"
+                logger.info(
+                    f"Selected FLUX3 single-card worker {group_index}; "
+                    "service will start one worker"
+                )
             return
 
         # A Galaxy submesh is defined by its physical Fabric placement, not
@@ -474,7 +505,20 @@ class Settings(BaseSettings):
                     )
 
             elif mesh in ((2, 4), (4, 2)):
-                devices = dm.get_device_groups_of_eight()
+                column_pair_placement = (
+                    mesh == (2, 4)
+                    and os.environ.get("FLUX3_8CHIP_PLACEMENT", "")
+                    .strip()
+                    .lower()
+                    == "column-pairs"
+                )
+                if column_pair_placement:
+                    logger.info(
+                        "Using experimental FLUX3 TP2xSP4 column-pair placement"
+                    )
+                    devices = dm.get_flux3_tp2sp4_column_pair_groups()
+                else:
+                    devices = dm.get_device_groups_of_eight()
                 if not devices:
                     raise RuntimeError(
                         f"Galaxy FLUX.3 {mesh}: device discovery returned no groups. "

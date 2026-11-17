@@ -62,7 +62,7 @@ FLUX3_PARENT_MESH_MODE=direct
 
 ## 3. 单 worker 模式
 
-自动发现仍然执行，但用 `FLUX3_WORKER_GROUP_INDEX` 只保留一个发现出来的 worker 组。这个变量适合单 worker 性能测试或调试，不建议生产服务使用。
+自动发现仍然执行，但用 `FLUX3_WORKER_GROUP_INDEX` 只保留一个发现出来的 worker 组。单卡 `legacy-single` 也会通过 `tt-smi` 发现单卡列表后选择一个设备。这个变量适合单 worker 性能测试或调试，不建议生产服务使用。
 
 单卡一个 worker：
 
