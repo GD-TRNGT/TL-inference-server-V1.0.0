@@ -231,6 +231,13 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
             "shape": "8x4",
             "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
         },
+        "tp4sp2": {
+            "child": (4, 2),
+            # The 4x2 child is cut from the official 8x4 Galaxy parent.
+            # Axis 0 carries TP4 and axis 1 carries SP2.
+            "shape": "8x4",
+            "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
+        },
         "sp8": {
             "child": (8, 1),
             "shape": "8x4",
@@ -251,6 +258,9 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         "sp2-tp2": "tp2sp2",
         "sp4tp2": "tp2sp4",
         "sp4-tp2": "tp2sp4",
+        "tp4-sp2": "tp4sp2",
+        "sp2tp4": "tp4sp2",
+        "sp2-tp4": "tp4sp2",
         "tp8-ring": "tp8ring",
         "pure-tp8-ring": "tp8ring",
         "pure_tp8_ring": "tp8ring",
@@ -369,6 +379,8 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
                 or (flux3_profile in {"", "auto"} and flux3_parallelism == "sp")
                 else "bh_galaxy_flux3_sp8_ring.textproto"
                 if is_flux3_sp8
+                else "bh_galaxy_flux3_tp2sp2_mesh.textproto"
+                if is_flux3_tp2sp2
                 else "bh_galaxy_flux3_tp2sp4_torus.textproto"
                 if is_flux3_tp2sp4
                 else "bh_galaxy_flux3_tp4sp2_mesh.textproto"

@@ -33,6 +33,7 @@ TT_METAL_TDP_LIMIT_WATTS=160
 | 四卡 SP | `sp4` | `4x1` | 4 | 8 | `test_system_health` 发现物理四卡组；Ring |
 | 四卡 TP | `tp4` | `4x1` | 4 | 8 | `test_system_health` 发现物理四卡组 |
 | 四卡 TP 轴转置 | `tp4axis1` | `1x4` | 4 | 8 | `test_system_health` 发现物理四卡组 |
+| 四卡 TP2×SP2 | `tp2sp2` | `2x2` | 4 | 8 | `test_system_health` 发现物理四卡组 |
 | 八卡 SP | `sp8` | `8x1` | 8 | 4 | `tt-smi` 发现跨 tray 的 SP8 Ring 分组 |
 | 八卡纯 TP Ring | `tp8ring` | `1x8` | 8 | 4 | `tt-smi` 发现 TP8 Ring 分组 |
 | 八卡 TP2×SP4 | `tp2sp4` | `2x4` | 8 | 4 | `tt-smi` 按 tray 生成 8 卡组 |
@@ -71,24 +72,59 @@ FLUX3_EXECUTION_PROFILE=legacy-single
 FLUX3_WORKER_GROUP_INDEX=0
 ```
 
-双卡一个 worker：
+双卡一个 worker，SP2：
 
 ```bash
 FLUX3_EXECUTION_PROFILE=sp2
 FLUX3_WORKER_GROUP_INDEX=0
 ```
 
-四卡一个 worker：
+双卡一个 worker，纯 TP2：
+
+```bash
+FLUX3_EXECUTION_PROFILE=tp2
+FLUX3_WORKER_GROUP_INDEX=0
+```
+
+四卡一个 worker，SP4：
 
 ```bash
 FLUX3_EXECUTION_PROFILE=sp4
 FLUX3_WORKER_GROUP_INDEX=0
 ```
 
-八卡一个 worker：
+四卡一个 worker，纯 TP4：
+
+```bash
+FLUX3_EXECUTION_PROFILE=tp4
+FLUX3_WORKER_GROUP_INDEX=0
+```
+
+四卡一个 worker，TP2×SP2：
+
+```bash
+FLUX3_EXECUTION_PROFILE=tp2sp2
+FLUX3_WORKER_GROUP_INDEX=0
+```
+
+八卡一个 worker，SP8：
 
 ```bash
 FLUX3_EXECUTION_PROFILE=sp8
+FLUX3_WORKER_GROUP_INDEX=0
+```
+
+八卡一个 worker，纯 TP8 Ring：
+
+```bash
+FLUX3_EXECUTION_PROFILE=tp8ring
+FLUX3_WORKER_GROUP_INDEX=0
+```
+
+八卡一个 worker，TP2×SP4 或 TP4×SP2：
+
+```bash
+FLUX3_EXECUTION_PROFILE=tp2sp4  # 或 tp4sp2
 FLUX3_WORKER_GROUP_INDEX=0
 ```
 
@@ -124,6 +160,7 @@ create_submeshes(child_shape)
 | `sp4` | `4x8` | `4x1` | 8 |
 | `tp4` | `4x8` | `4x1` | 8 |
 | `tp4axis1` | `4x8` | `1x4` | 8 |
+| `tp2sp2` | `8x4` | `2x2` | 8 |
 
 示例：
 
@@ -140,6 +177,7 @@ FLUX3_SUBMESH_INDEX=0
 | `sp8` | `8x4` | `8x1` | 4 |
 | `tp8ring` | `4x8` | `1x8` | 4 |
 | `tp2sp4` | `8x4` | `2x4` | 4 |
+| `tp4sp2` | `8x4` | `4x2` | 4 |
 
 示例：
 
@@ -154,7 +192,8 @@ FLUX3_SUBMESH_INDEX=0
 - `sp4` direct Ring 是四卡默认生产路径；不要把它自动切换成父子 mesh。
 - `sp8` 和 `tp8ring` 的 direct Ring 路径保留，父子 mesh 只通过显式 `FLUX3_PARENT_MESH_MODE=parent` 启用。
 - `tp2sp4` 已有 direct 自动分组和父子 mesh 两条路径。
-- `tp4sp2` 已有 direct 自动分组；当前没有纳入父子 mesh profile，不能在使用说明中写成已验证的父子 mesh 场景。
+- `tp4sp2` 与 `tp2sp4` 都支持 direct 自动分组和显式父 mesh/子 mesh；二者分别对应 `4x2` 与 `2x4` 子 mesh。
+- `tp2sp2` 是四卡 `2x2` 子 mesh profile；它与 `tp4`/`sp4` 一样使用四卡 worker，但 TP/SP 分别落在两个子 mesh 轴上。
 - `FLUX3_WORKER_GROUP_INDEX` 只用于单 worker 选组，不改变物理拓扑发现算法。
 - 所有性能测试应固定 `TT_MM_THROTTLE_PERF=0`、`TT_METAL_TDP_LIMIT_WATTS=160`，并使用同步串行请求。
 

@@ -224,6 +224,7 @@ class Settings(BaseSettings):
         flux3_parent_layouts = {
             "tp2sp4": ((2, 4), "8x4"),
             "tp2sp2": ((2, 2), "8x4"),
+            "tp4sp2": ((4, 2), "8x4"),
             "tp4axis1": ((1, 4), "4x8"),
             "sp8": ((8, 1), "8x4"),
             "tp8ring": ((1, 8), "4x8"),
@@ -235,6 +236,9 @@ class Settings(BaseSettings):
             "sp2-tp2": "tp2sp2",
             "sp4tp2": "tp2sp4",
             "sp4-tp2": "tp2sp4",
+            "tp4-sp2": "tp4sp2",
+            "sp2tp4": "tp4sp2",
+            "sp2-tp4": "tp4sp2",
             "tp8-ring": "tp8ring",
             "pure-tp8-ring": "tp8ring",
             "pure_tp8_ring": "tp8ring",
@@ -404,14 +408,24 @@ class Settings(BaseSettings):
         # partial mesh and the scheduler could not attach submesh indices.
         if (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and mesh in {(4, 1), (1, 4)}
-            and flux3_profile in {"sp4", "tp4", "tp4axis1"}
+            and mesh in {(4, 1), (1, 4), (2, 2)}
+            and flux3_profile in {"sp4", "tp4", "tp4axis1", "tp2sp2"}
             and parent_mode not in {"0", "false", "off", "direct", "legacy"}
         ):
-            os.environ.setdefault("FLUX3_PARENT_MESH_SHAPE", "4x8")
+            os.environ.setdefault(
+                "FLUX3_PARENT_MESH_SHAPE",
+                "8x4" if flux3_profile == "tp2sp2" else "4x8",
+            )
+        if (
+            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and mesh == (4, 2)
+            and flux3_profile == "tp4sp2"
+            and parent_mode not in {"0", "false", "off", "direct", "legacy"}
+        ):
+            os.environ.setdefault("FLUX3_PARENT_MESH_SHAPE", "8x4")
         parent_submesh = (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and mesh in ((4, 1), (1, 4), (2, 4), (8, 1), (1, 8))
+            and mesh in ((4, 1), (1, 4), (2, 2), (2, 4), (4, 2), (8, 1), (1, 8))
             and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
             in {"4x8", "8x4"}
             and os.environ.get("FLUX3_PARENT_MESH_MODE", "direct" if flux3_profile == "sp4" else "parent").strip().lower()
@@ -468,7 +482,7 @@ class Settings(BaseSettings):
                         "Cluster.ReportSystemHealth succeeds."
                     )
 
-            elif mesh in ((1, 4), (4, 1)):
+            elif mesh in ((1, 4), (4, 1), (2, 2)):
                 logger.info(
                     "Running Galaxy FLUX.3 TP4 device discovery (test_system_health, may take 10-15s)..."
                 )

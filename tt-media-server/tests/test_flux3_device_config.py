@@ -77,6 +77,30 @@ def test_flux3_tp4sp2_uses_physical_2d_fabric():
     )
 
 
+def test_flux3_tp2sp2_profile_uses_2d_tensor_and_sequence_parallelism(monkeypatch):
+    monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "tp2sp2")
+
+    assert _flux3_execution_profile((2, 2)) == "tp2sp2"
+    assert _flux3_tp_degree((2, 2)) == 2
+    assert _flux3_parallel_factors((2, 2)) == ((2, 0), (2, 1))
+
+
+@pytest.mark.parametrize("alias", ["tp2-sp2", "sp2tp2", "sp2-tp2"])
+def test_flux3_tp2sp2_profile_aliases(monkeypatch, alias):
+    monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", alias)
+    assert _flux3_execution_profile((2, 2)) == "tp2sp2"
+
+
+def test_flux3_tp2sp2_uses_physical_2d_fabric():
+    runner = _legacy_runner_for_device_params()
+    runner._execution_profile = "tp2sp2"
+    runner.settings = SimpleNamespace(device_mesh_shape=(2, 2))
+
+    assert (
+        runner.get_pipeline_device_params()["fabric_config"]
+        == dit_runners.ttnn.FabricConfig.FABRIC_2D
+    )
+
 def test_flux3_reserves_128_kib_by_default(monkeypatch):
     monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "auto")
     monkeypatch.delenv('FLUX3_L1_SMALL_SIZE', raising=False)

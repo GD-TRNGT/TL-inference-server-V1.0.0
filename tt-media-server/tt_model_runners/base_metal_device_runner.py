@@ -185,6 +185,9 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
             "sp2-tp2": "tp2sp2",
             "sp4tp2": "tp2sp4",
             "sp4-tp2": "tp2sp4",
+            "tp4-sp2": "tp4sp2",
+            "sp2tp4": "tp4sp2",
+            "sp2-tp4": "tp4sp2",
             "tp8-ring": "tp8ring",
             "pure-tp8-ring": "tp8ring",
             "pure_tp8_ring": "tp8ring",
@@ -195,6 +198,7 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
             "tp4axis1": ((1, 4), (4, 8)),
             "tp2sp2": ((2, 2), (8, 4)),
             "tp2sp4": ((2, 4), (8, 4)),
+            "tp4sp2": ((4, 2), (8, 4)),
             "sp8": ((8, 1), (8, 4)),
             "tp8ring": ((1, 8), (4, 8)),
         }.get(profile)
