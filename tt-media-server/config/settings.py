@@ -223,6 +223,8 @@ class Settings(BaseSettings):
         # discovery path available with FLUX3_PARENT_MESH_MODE=legacy.
         flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
         flux3_parent_layouts = {
+            "sp2": ((2, 1), "4x8"),
+            "tp2": ((2, 1), "4x8"),
             "tp2sp4": ((2, 4), "8x4"),
             "tp2sp2": ((2, 2), "8x4"),
             "tp4sp2": ((4, 2), "8x4"),
@@ -412,8 +414,8 @@ class Settings(BaseSettings):
         # partial mesh and the scheduler could not attach submesh indices.
         if (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and mesh in {(4, 1), (1, 4), (2, 2)}
-            and flux3_profile in {"sp4", "tp4", "tp4axis1", "tp2sp2"}
+            and mesh in {(2, 1), (4, 1), (1, 4), (2, 2)}
+            and flux3_profile in {"sp2", "tp2", "sp4", "tp4", "tp4axis1", "tp2sp2"}
             and parent_mode not in {"0", "false", "off", "direct", "legacy"}
         ):
             os.environ.setdefault(
@@ -429,7 +431,7 @@ class Settings(BaseSettings):
             os.environ.setdefault("FLUX3_PARENT_MESH_SHAPE", "8x4")
         parent_submesh = (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and mesh in ((4, 1), (1, 4), (2, 2), (2, 4), (4, 2), (8, 1), (1, 8))
+            and mesh in ((2, 1), (4, 1), (1, 4), (2, 2), (2, 4), (4, 2), (8, 1), (1, 8))
             and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
             in {"4x8", "8x4"}
             and os.environ.get("FLUX3_PARENT_MESH_MODE", "direct" if flux3_profile == "sp4" else "parent").strip().lower()

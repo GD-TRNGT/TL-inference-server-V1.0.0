@@ -50,7 +50,7 @@ _PROFILES = {
         "legacy-single", (1, 1), None, (1, 0), (1, 0), "linear", "disabled", 1, False
     ),
     "sp2": Flux3Profile(
-        "sp2", (2, 1), None, (1, 1), (2, 0), "linear", "1d_ring", 1, True
+        "sp2", (2, 1), (4, 8), (1, 1), (2, 0), "linear", "1d_ring", 1, True
     ),
     "tp2": Flux3Profile(
         # A 2x1 Galaxy child is a line, not a valid 1D ring axis for the
@@ -58,7 +58,7 @@ _PROFILES = {
         # initialized the device but stalled during the first warmup.
         # Keep pure TP2 on the reliable linear path; TP2 still shards the
         # hidden dimension across axis 0.
-        "tp2", (2, 1), None, (2, 0), (1, 0), "linear", "1d", 1, True
+        "tp2", (2, 1), (4, 8), (2, 0), (1, 0), "linear", "1d", 1, True
     ),
     "sp4": Flux3Profile(
         "sp4", (4, 1), (4, 8), (1, 1), (4, 0), "ring", "1d_ring", 2, True

@@ -5,7 +5,7 @@
 import os
 
 from config.constants import DeviceTypes, ModelRunners
-from config.flux3_profiles import canonical_profile_name
+from config.flux3_profiles import canonical_profile_name, get_flux3_profile
 from config.settings import settings
 from telemetry.telemetry_client import get_telemetry_client
 
@@ -205,6 +205,16 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         # 4x1 open is a partial torus and can fail Fabric router placement.
         # Both SP4 and pure TP4 use the same physical child shape; the runner
         # still selects the model-parallel semantics from its profile.
+        "sp2": {
+            "child": (2, 1),
+            "shape": "4x8",
+            "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
+        },
+        "tp2": {
+            "child": (2, 1),
+            "shape": "4x8",
+            "descriptor": "single_bh_galaxy_mesh_graph_descriptor.textproto",
+        },
         "sp4": {
             "child": (4, 1),
             "shape": "4x8",
@@ -272,6 +282,14 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         # The process opens the complete Galaxy parent mesh and selects one
         # topology-valid child with create_submeshes().
         os.environ["FLUX3_PARENT_MESH_SHAPE"] = parent_spec["shape"]
+        # Keep parent placement aligned with the profile's collective
+        # semantics.  The old base-runner default was Ring for every parent,
+        # which is wrong for pure TP2 and all 2-D Linear profiles.
+        os.environ["FLUX3_PARENT_FABRIC_CONFIG"] = {
+            "1d_ring": "1d_ring",
+            "1d": "1d",
+            "2d": "2d",
+        }[get_flux3_profile(flux3_profile).fabric_config]
         descriptor = parent_spec["descriptor"]
         descriptor_override = os.environ.get("FLUX3_PARENT_MESH_DESCRIPTOR", "").strip()
         if descriptor_override:
