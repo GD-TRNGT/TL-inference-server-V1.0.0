@@ -1,6 +1,6 @@
 # FLUX.3 Image Klein 在 TT-Metal / TL-inference-server 上的完整适配记录
 
-更新时间：2026-11-14
+更新时间：2026-11-13
 
 ## 1. 当前结论
 
@@ -1777,7 +1777,7 @@ TT-Metal 的 `transformer_flux3.py:Flux3Transformer.forward()` 增加可选 `joi
 
 - `FLUX3_TP_SIZE=2`
 - `FLUX3_PARALLELISM=sp`
-- `FLUX3_EXECUTION_PROFILE=sp2`（设备组由 Galaxy 拓扑自动发现；不支持手工设置 `FLUX3_DEVICE_IDS`）
+- `FLUX3_DEVICE_IDS=(0,1)`
 - `TT_MESH_GRAPH_DESC_PATH=/tmp/bh_2_1_line_line.textproto`
 - `TT_MM_THROTTLE_PERF=0`、`TT_METAL_TDP_LIMIT_WATTS=160`
 
@@ -1830,66 +1830,49 @@ TP4 容器 `flux3-glx-1x4-ring` 因占用整机 32 颗芯片，已停止；本�
 
 本轮结束时 TT-Metal 工作树仍有 `transformer_flux3.py` 与 `pipeline_flux3.py` 两个未提交文件：前者包含 SP2 路径，后者包含 SP2 调度和本节的 RoPE cache；在与完整回归/提交边界确认前没有新建 commit。
 
-## 34. 2026-11-14：Galaxy03 四个 TP1×SP8 Ring worker
+## 34. 2026-11-18：当前 FLUX3 代码状态与父子 Mesh 更新
 
-### 34.1 目标和拓扑
+本节是对前文历史记录的当前状态修订。前文保留当时的实验过程；如果与本节冲突，以本节和对应提交为准。
 
-新增 `FLUX3_EXECUTION_PROFILE=sp8`。完整 Galaxy 的 32 颗芯片会自动拆成四个互不重叠的 `8×1` Ring worker；每个 worker 的 DiT 使用 `TP1×SP8`（权重复制、image token 沿 Ring 分片），因此服务总计为 4 workers，而不是把连续 8 张同 tray 芯片误当作 Ring。
+### 34.1 当前代码基线
 
-Galaxy03 经 `tt-smi -glx_list_tray_to_device` 发现的 tray 顺序为 `0..7`、`8..15`、`24..31`、`16..23`。TT-Metal upstream 的 `create_submeshes(MeshShape(8,1))` 和 intragalaxy torus binding 对应的安全分组为：
+当前 TL-inference-server 分支为 `flux3-tp2sp4-eval`，最新提交：
 
 ```text
-(0,1,2,3,11,10,9,8)
-(4,5,6,7,15,14,13,12)
-(28,29,30,31,23,22,21,20)
-(24,25,26,27,19,18,17,16)
+1ae19312 flux3: complete parent child mesh profile regression
 ```
 
-### 34.2 已实现文件
+本次涉及的主要 server 文件：
 
-| 仓库 | 文件 | 改动 |
-| --- | --- | --- |
-| TL-inference-server | `tt-media-server/config/settings.py` | 增加 `sp8` / `sp-8` profile，逻辑 mesh `(8,1)`，自动创建 4 个 worker。 |
-| TL-inference-server | `tt-media-server/model_services/scheduler.py` | SP8 后续 worker 必须等前一 Ring 的模型 warmup 真正完成；再执行 `NEW_DEVICE_DELAY_SECONDS`（默认 120 秒）的稳定等待。`All workers ready` 仅在 4 个预期 worker 都已注册且 ready 时输出。 |
-| TL-inference-server | `tt-media-server/domain/image_generate_request.py` | 将 SP8 的容量边界前置为 API/Pydantic 校验：只接收正方形 `1024` 或 `2048`，4096 在入队前返回 422，而不是在设备 worker 中变为 500。 |
-| TL-inference-server | `tt-media-server/utils/device_manager.py` | 新增 `get_flux3_sp8_groups()`；按 Galaxy 物理 tray 布局构造四个 column Ring，而非沿用 `get_device_groups_of_eight()` 的连续 tray 分组。 |
-| TL-inference-server | `tt-media-server/utils/runner_utils.py` | SP8 自动指向专用 8×1 Ring descriptor；若继承旧 SP4 descriptor 则安全替换。 |
-| TL-inference-server | `tt-media-server/descriptors/bh_galaxy_flux3_sp8_ring.textproto` | 新增无设备 ID 的通用 8×1 Ring mesh descriptor；每个 worker 由自身 `TT_VISIBLE_DEVICES` 绑定不同 column Ring。 |
-| TL-inference-server | `tt-media-server/tt_model_runners/dit_runners.py` | 将 SP8 纳入 pipeline 创建、warmup、run、Ring CCL 和 `TP=(1,1), SP=(8,0)` 并行因子。 |
-| TL-inference-server | `tt-media-server/tests/test_device_manager.py` | 为实际 Galaxy03 tray 编号加入两项 SP8 Ring 映射测试。 |
-| TL-inference-server | `tt-media-server/tests/test_flux3_request_and_auth.py` | 新增 SP8 1024/2048 接受、4096/非正方形拒绝的 API 请求模型测试。 |
-| tt-metal | `models/tt_dit/pipelines/flux3_klein/pipeline_flux3_klein.py` | TP1×SPN 下让 Qwen3-VL text encoder 在 SP 轴做 weight-only TP，避免 cache 中 replica 标签和实际 shard 内容不一致。 |
-| tt-metal | `models/tt_dit/models/transformers/flux3_klein/transformer_block_flux3_klein.py` | TP1×SPN 禁用错误使用 factor-one TP 轴的 fused MMRS projection；Ring-SDPA 仍启用。 |
-| tt-metal | `models/tt_dit/pipelines/flux3_klein/vae_flux3_klein.py` | 对 H 分片 decoder conv 保留显式 DRAM width slice；修复 4096 下 auto unsliced path 尝试 1 GiB 中间分配造成的 DRAM OOM。 |
+```text
+tt-media-server/config/flux3_profiles.py
+tt-media-server/config/settings.py
+tt-media-server/utils/runner_utils.py
+```
 
-### 34.3 问题记录与处理
+当前代码已经把 FLUX3 的 direct 路径和 Galaxy 父 Mesh/子 Mesh 路径统一纳入 profile 配置。`sp2`、`tp2` 也有 parent Mesh 配置；2D profile 不再错误继承 Ring parent Fabric。
 
-1. 初版误用每 tray 连续 8 卡。它不是 Galaxy 的 8 卡 Ring；在某些 collective 上会出现 same-source/same-destination Fabric route。已替换为 upstream column Ring 映射。
-2. 初版 SP8 的 4096 warmup 在 VAE H-sharded conv 报 `Out of Memory`：每芯片已分配约 3.96 GiB，仅剩约 307 MiB 连续 DRAM，而未切片路径试图跨 8 bank 分配 1 GiB。已改为显式 DRAM width slicing。
-3. 首次 explicit-slice 尝试仍在同一 `514×4096×256→256` halo conv 报 L1 OOM（每 bank 需要 839,680 B、仅余 659,712 B）。一次错误的 16-row activation-block 尝试又被 TTNN 明确拒绝，因为 Conv2d block 必须为 tile height 32 的倍数。最终 SP8 配置使用合法的 32-row block、关闭 double buffer，并将 H-partitioned conv width slices 加倍；保留 SP1/SP2/SP4 原有的 64-row double-buffer schedule。
-4. 全量 `test_device_manager.py` 在真实 Galaxy host 有一个既有环境相关失败：`test_get_device_pairs_failure` 仅 mock system-health、但代码会 fallback 到真实 `tt-smi`，所以机器实际返回 pairs。该失败与 SP8 改动无关；新增的两个 SP8 node tests 已单独通过。
-5. 经过多个尺寸和参考图 layout 的 warmup 后，`Conv2d._prepared` 会保留每个输入 shape 的 `prepare_conv_weights` 结果。即使已启用 DRAM slicing，SP8 worker 仍会在下一轮 `514×4096×256→256` conv 前只剩约 323 MiB DRAM，无法分配 1 GiB output activation。先尝试“仅在 shape 切换时释放”，但第二轮 text bucket 中 shape 未切换仍复现 OOM，说明 prepared 状态/运行时分配仍会累积。最终在每次 VAE encode/decode 完成后，仅对 TP1×SP8 递归释放各层 `Conv2d._prepared`；基础权重与已编译 program 不释放。此前实测该策略下后续 4096 decode 约 3.4 秒，证明不会反复 JIT 编译；SP1/SP2/SP4 保持原有常驻策略。
-6. 一次在 worker 关闭后未完成 Galaxy reset 就立即重新打开全部 32 芯片，UMD 记录了 `Setting power state failed ... Connection timed out`，继而三个 worker 报 `MMIO per-op timeout`。该启动作废；标准验证流程固定为：停止容器 → `tt-smi -glx_reset_auto` 完成且 `tt-smi -glx_list_tray_to_device` 恢复 32 芯片 → 再启动容器。不能以容器仍是 `Up` 判定设备已可用。
-7. 即使每次回收 `Conv2d._prepared`，在第二个长文本 bucket 的 4096 仍会稳定失败：`514×4096×256` 输出本身约为 1 GiB/芯片，而完整 resident DiT + Qwen3-VL 后每颗 Blackhole 只余约 350 MiB 可分配 DRAM。这是 8 芯片总并行度下的容量边界，不是拓扑或缓存遗漏。因而 `sp8` profile 明确服务 `1024` 和 `2048`；`4096` 由已有的 `sp8tp4`（32 芯片，VAE 二维空间并行）profile 服务。API 会在入队前返回明确的 unsupported-size 错误，不再让 worker 在设备端 OOM。
-8. 四个 SP8 worker 若在同一秒并发打开并 warmup，前三组可就绪而最后一组可能长时间卡在 device poll、既不报错也不发 ready 信号。`/tt-liveness` 的 `model_ready` 只表示至少一个 worker 可用，不能代表四组均已就绪。初版只按“进程 start 时刻”固定等待 120 秒，第三组 ready 后约 13 秒仍会启动第四组，不能消除重叠。最终改为 scheduler readiness barrier：前一 worker 发送真实 warmup ready 信号后，才开始 `NEW_DEVICE_DELAY_SECONDS=120`（用户显式指定时尊重）稳定等待，再启动下一 Ring；并且只有 `len(worker_info)==worker_count` 且全部 ready 时才写 `All workers ready`。正常推理时四 worker 仍并发处理请求。
+### 34.2 当前已验证的并行范围
 
-### 34.4 交付镜像和验证状态
+在 Galaxy03 上使用现有 v1.0.27 镜像和最新 server 源码挂载，完成同步、串行、1024×1024、16 steps、seed 42、JPEG 的父子 Mesh 真机回归：
 
-正式无源码 bind mount 镜像已构建：`galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.3-sp8`，image ID `sha256:67b9e36224e328b1afe9f94f73b529fb4f711f1369d7c1fff97312699abef67c`。Docker context 显式复制本节的 server、Transformer、pipeline、VAE 和两种 Ring descriptor。
+| Profile | Parent/child | HTTP | Denoise | VAE |
+|---|---|---:|---:|---:|
+| `sp2` | `4x8 -> 2x1` | 6.329s | 5.544s | 0.658s |
+| `tp2` | `4x8 -> 2x1` | 4.289s | 3.498s | 0.658s |
+| `sp4` | `4x8 -> 4x1` | 3.327s | 2.857s | 0.343s |
+| `tp4` | `4x8 -> 4x1` | 4.030s | — | — |
+| `tp4axis1` | `4x8 -> 1x4` | 5.045s | — | — |
+| `tp2sp2` | `8x4 -> 2x2` | 4.298s | 3.518s | 0.658s |
+| `sp8` | `8x4 -> 8x1` | 2.580s | 1.832s | 0.624s |
+| `tp8ring` | `4x8 -> 1x8` | 3.464s | — | — |
+| `tp2sp4` | `8x4 -> 2x4` | 2.773s | 2.306s | 0.344s |
+| `tp4sp2` | `8x4 -> 4x2` | 3.349s | 2.565s | 0.657s |
 
-### 34.5 正式镜像真机验证（完成）
+所有项目均 HTTP 200 并返回有效 JPEG。`sp8tp4` 继续保持 32 卡 direct 全 Galaxy 路径，不在本轮拆成 parent/child。21:9 和 9:21 也没有在本轮调试或回归。
 
-正式镜像：`galaxy-inference-media-server:flux-3-image-klein-tl-v1.0.4-sp8`，image digest `sha256:a469908351b564896a56d834e9eb4d9506636ebd8798ff80d40f999a9089b3d3`。运行容器 `flux3-v104-sp8-formal` 只挂载 hugepages、`/local/models`、`/local/lnn/fluxcache` 和 TT-Metal cache；`docker inspect` 确认没有任何 TL-inference-server 或 tt-metal 源码 bind mount。
+### 34.3 历史结论的解释
 
-首次正式镜像验证曾在不完整 reset 后卡在首个 worker warmup 后段。根因不是镜像漏文件：容器内 scheduler、request model、pipeline 和 VAE 的 SHA256 均与仓库文件相同。根因是前台执行 `tt-smi -glx_reset_auto` 的外部会话在 22 秒左右被中断，未完成芯片 re-initialization。最终流程改为后台等待 reset 完整结束，日志明确出现 `All 32 chips found in "/dev/tenstorrent"` 和 `Re-initialized 32 boards after reset`，再启动容器。
+前文中“2/4 芯片单请求并行暂缓”等内容属于 2026-11-13 以前的阶段性状态，不能代表当前 profile 实现。当前文档应结合 `FLUX3_PARENT_CHILD_MESH_REGRESSION_20261118.md` 阅读；该文档记录了当前实际 mesh、Fabric、HTTP 和阶段耗时。
 
-正式验证时间线：第 1/2/3/4 Ring 分别在 `18:27:05`、`18:30:51`、`18:34:39`、`18:38:25`（Galaxy03 本机 2026-11-13）报告 ready；第 4 组 ready 后才出现一次 `All workers ready`。四组均 `is_alive=true`、`is_ready=true`、`error_count=0`。
-
-随后向端口 `18130` 并发发送 4 个 `a black bird`、`1024×1024`、16-step、`response_format=file`、PNG 请求，四个 Ring 各处理一个任务。HTTP 总时间为 `3.028`、`3.078`、`2.992`、`2.958` 秒；4/4 返回有效 1024×1024 RGB PNG。设备端 `denoise` 为 `1.845–1.861 s`，VAE decode 为 `0.634–0.668 s`。图片保存在 `/local/lnn/fluxcache/sp8-formal-v104-20261113/black_bird_sp8_formal_seed{52..55}.png`。
-
-对 `4096×4096` 请求，API 在调度前返回 HTTP 422：`FLUX.3 SP8 serves only square 1024x1024 or 2048x2048 ... Use the sp8tp4 profile for 4096x4096.`；日志没有 worker 执行任务或 error count 增长。这证实容量边界已在 API 层生效。
-
-
-### 35. 2026-11-14：SP8 4096 VAE decoder 调度固化
-
-`sp8` 的 4096 API 上限已按官方模型边界持久化为单边 `16–4096`、16 像素对齐；不再保留早期“SP8 仅 1024/2048”的输入限制。对 Galaxy03 TP1×SP8 Ring 的完整 warmup 后 4096×4096、Distilled、16-step 请求，VAE decoder 从历史的 `act_block_h=32, double_buffer=false` 调整为 `64, true`。对 SP8 中不合法的 Conv2d shape，TTNN 会自动回退为 32-row block；正式请求的 VAE decode 从 `3.541s` 降至 `3.054s`（约 13.7%），PNG SHA256 保持完全一致。H1/H2/H4 profile 同样使用 `64, true`，所以所有 1/2/4/8 卡 worker 都启用 double buffer。详细测试、约束和覆盖接口见 `FLUX3_SP8_VAE_SCHEDULING.md`。
+当前 `sp2` 的父 Mesh placement 日志为 `1d_ring`，但子模型加载日志记录为 `topology=Linear`；这反映父 Mesh placement 与子模型 collective topology 是两个独立配置字段，不代表请求失败。该差异已如实记录，未在本轮扩大修改范围。
