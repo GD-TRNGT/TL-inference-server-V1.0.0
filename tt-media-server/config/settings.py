@@ -402,6 +402,17 @@ class Settings(BaseSettings):
             "FLUX3_PARENT_MESH_MODE",
             "direct" if flux3_profile == "sp4" else "parent",
         ).strip().lower()
+        # Keep the selected default visible to every later startup layer.
+        # runner_utils, the base mesh runner, and scheduler all run after
+        # Settings construction; leaving this as an implicit local default
+        # makes them fall back to "direct" and disagree about whether the
+        # parent mesh is active.
+        if (
+            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and profile is not None
+            and profile.parent_mesh is not None
+        ):
+            os.environ.setdefault("FLUX3_PARENT_MESH_MODE", parent_mode)
 
         # Settings is constructed before worker_utils starts the runner. Export
         # the profile's parent shape here so the scheduler can hand one full
