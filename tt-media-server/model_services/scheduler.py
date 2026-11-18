@@ -13,6 +13,12 @@ from threading import Lock
 from typing import Any
 
 from config.constants import CANARY_TASK_IDS, SHUTDOWN_SIGNAL, ModelServices, QueueType
+from config.flux3_profiles import (
+    canonical_profile_name,
+    flux3_parent_mesh_for,
+    get_flux3_parent_mode,
+    get_flux3_profile,
+)
 from config.settings import get_settings
 from device_workers.device_worker import device_worker
 from device_workers.device_worker_dynamic_batch import (
@@ -303,12 +309,29 @@ class Scheduler:
         # Parent/child FLUX.3 workers all see the same 32-chip parent mesh.
         # Make their scheduler identities unique while runner_utils strips this
         # marker before assigning TT_VISIBLE_DEVICES. Legacy mode is unchanged.
+        requested_profile = canonical_profile_name(
+            os.environ.get("FLUX3_EXECUTION_PROFILE", "")
+        )
+        profile = (
+            None
+            if requested_profile == "auto"
+            else get_flux3_profile(requested_profile)
+        )
+        parent_mesh = (
+            flux3_parent_mesh_for(
+                profile,
+                mode=get_flux3_parent_mode(
+                    os.environ.get("FLUX3_PARENT_MESH_MODE")
+                ),
+            )
+            if profile is not None
+            else None
+        )
         if (
-            os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
-            in {"4x8", "8x4"}
-            and tuple(self.settings.device_mesh_shape) in ((4, 1), (2, 4), (8, 1), (1, 8))
-            and os.environ.get("FLUX3_PARENT_MESH_MODE", "direct").strip().lower()
-            == "parent"
+            parent_mesh is not None
+            and tuple(self.settings.device_mesh_shape) == profile.worker_mesh
+            and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
+            == f"{parent_mesh[0]}x{parent_mesh[1]}"
             and "::submesh=" not in worker_id
         ):
             worker_id = f"{worker_id}::submesh={worker_index}"

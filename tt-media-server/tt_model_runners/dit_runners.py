@@ -605,11 +605,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 f"model={self._klein_model}, TP{tp_factor[0]}xSP{sp_factor[0]} "
                 f"mesh={mesh_shape}, topology={topology.name}, prompt_upsampler=disabled"
             )
-            default_sizes = (
-                (1024, 2048)
-                if self._execution_profile in {"tp2sp2", "tp2sp4", "tp4sp2"}
-                else (1024, 2048, 4096)
-            )
+            default_sizes = self._flux3_profile.pipeline_warmup_sizes
             # An explicit list bounds startup warmup only. It must not narrow
             # request validation, which follows the model's official geometry.
             warmup_sizes_env = os.environ.get("FLUX3_WARMUP_SIZES", "").strip()
@@ -634,16 +630,13 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         # their own topology selection below.
         topology = (
             ttnn.Topology.Ring
-            if self._execution_profile == "tp8ring"
-            else ttnn.Topology.Ring
-            if self._tp_degree > 2
+            if self._flux3_profile.pipeline_topology == "ring"
             else ttnn.Topology.Linear
         )
         sp_factor = self._flux3_profile.sequence_parallel
         self._ccl_manager = CCLManager(
             self.ttnn_device,
-            # Upstream's Galaxy 4x8 Ring configuration uses two CCL links.
-            num_links=2 if self._tp_degree == 4 and sp_factor[0] == 8 else 1,
+            num_links=self._flux3_profile.num_links,
             topology=topology,
         )
         tp_factor = self._flux3_profile.tensor_parallel
@@ -692,7 +685,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             # experimental TP2 weight-sharded cache can deadlock during the
             # first device-to-host cache write.  TP4/TP8 retain their tested
             # VAE parallel configurations.
-            if self._execution_profile == "tp2":
+            if self._flux3_profile.vae_parallelism == "replicated":
                 vae_parallel = Flux2VaeParallelConfig()
             elif self._dit_parallel.tensor_parallel.factor > 1:
                 vae_parallel = Flux2VaeParallelConfig.from_axes(
@@ -720,16 +713,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
         if not self._uses_klein_pipeline():
             return await super().warmup()
         self.pipeline = await asyncio.to_thread(self.create_pipeline)
-        mesh_shape = tuple(self.ttnn_device.shape)
-        default_warmup_sizes = (
-            (1024, 2048)
-            if mesh_shape in {(8, 1), (2, 4)}
-            else (1024,)
-            # TP4xSP2 leaves 2048 VAE rows too wide for L1 on a 2x4 tray;
-            # retain this profile strictly for 1024 benchmark experiments.
-            if mesh_shape in {(2, 1), (4, 1), (4, 2)}
-            else (1024, 2048, 4096)
-        )
+        default_warmup_sizes = self._flux3_profile.runner_warmup_sizes
         warmup_sizes_env = os.environ.get("FLUX3_WARMUP_SIZES", "").strip()
         warmup_sizes = (
             tuple(int(value) for value in warmup_sizes_env.split(",") if value.strip())

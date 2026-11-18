@@ -2,7 +2,9 @@ import pytest
 
 from config.flux3_profiles import (
     canonical_profile_name,
+    flux3_parent_mesh_for,
     get_flux3_profile,
+    is_flux3_parent_mode,
     resolve_flux3_environment_profile,
     resolve_flux3_profile,
 )
@@ -95,3 +97,28 @@ def test_pure_tp2_profiles_use_matching_linear_transport(name):
     assert profile.pipeline_topology == "linear"
     assert profile.fabric_config == "1d"
     assert profile.num_links == 1
+
+
+@pytest.mark.parametrize(
+    ("name", "discovery_kind"),
+    [
+        ("legacy-single", "single"),
+        ("sp2", "pairs"),
+        ("tp2", "pairs"),
+        ("sp4", "groups4"),
+        ("tp2sp4", "groups8"),
+        ("sp8", "sp8_ring"),
+        ("tp8ring", "sp8_ring"),
+        ("sp8tp4", "groups32"),
+    ],
+)
+def test_profile_owns_physical_discovery_strategy(name, discovery_kind):
+    assert get_flux3_profile(name).discovery_kind == discovery_kind
+
+
+def test_parent_mesh_requires_explicit_non_direct_mode():
+    profile = get_flux3_profile("sp4")
+    assert not is_flux3_parent_mode("direct")
+    assert flux3_parent_mesh_for(profile, mode="direct") is None
+    assert is_flux3_parent_mode("parent")
+    assert flux3_parent_mesh_for(profile, mode="parent") == (4, 8)

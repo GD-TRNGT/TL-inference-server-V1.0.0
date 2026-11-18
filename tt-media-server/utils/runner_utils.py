@@ -5,7 +5,12 @@
 import os
 
 from config.constants import DeviceTypes, ModelRunners
-from config.flux3_profiles import get_flux3_descriptor, resolve_flux3_profile
+from config.flux3_profiles import (
+    flux3_parent_mesh_for,
+    get_flux3_descriptor,
+    get_flux3_parent_mode,
+    resolve_flux3_profile,
+)
 from config.settings import settings
 from telemetry.telemetry_client import get_telemetry_client
 
@@ -222,14 +227,12 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
     # Settings selects parent mode explicitly for deployments that own the
     # complete Galaxy. Direct mode remains the safe standalone default and keeps
     # this helper usable by isolated workers and unit tests.
-    parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "direct").strip().lower()
-    parent_enabled = (
-        parent_mode not in {"0", "false", "off", "direct", "legacy"}
-        and profile.parent_mesh is not None
-    )
+    parent_mode = get_flux3_parent_mode(os.environ.get("FLUX3_PARENT_MESH_MODE"))
+    parent_mesh = flux3_parent_mesh_for(profile, mode=parent_mode)
+    parent_enabled = parent_mesh is not None
 
     if parent_enabled:
-        rows, cols = profile.parent_mesh
+        rows, cols = parent_mesh
         os.environ["FLUX3_PARENT_MESH_SHAPE"] = f"{rows}x{cols}"
         os.environ["FLUX3_PARENT_MESH_WORKERS"] = "1"
         os.environ["FLUX3_PARENT_FABRIC_CONFIG"] = profile.fabric_config

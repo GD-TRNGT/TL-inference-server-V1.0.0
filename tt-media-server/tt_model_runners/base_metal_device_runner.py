@@ -6,7 +6,12 @@
 import os
 
 import ttnn
-from config.flux3_profiles import canonical_profile_name, get_flux3_profile
+from config.flux3_profiles import (
+    canonical_profile_name,
+    flux3_parent_mesh_for,
+    get_flux3_parent_mode,
+    get_flux3_profile,
+)
 from tt_model_runners.base_device_runner import BaseDeviceRunner
 
 
@@ -176,11 +181,9 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
         Profile metadata is owned by ``config.flux3_profiles`` so the base
         device runner does not carry a second, diverging FLUX3 profile table.
         """
-        parent_mode = os.environ.get(
-            "FLUX3_PARENT_MESH_MODE", "direct"
-        ).strip().lower()
-        if parent_mode in {"", "0", "false", "off", "direct", "legacy"}:
-            return None
+        parent_mode = get_flux3_parent_mode(
+            os.environ.get("FLUX3_PARENT_MESH_MODE")
+        )
 
         raw = os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
         child = tuple(self.settings.device_mesh_shape)
@@ -190,7 +193,7 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
         if profile_name == "auto":
             return None
         profile = get_flux3_profile(profile_name)
-        expected_parent = profile.parent_mesh
+        expected_parent = flux3_parent_mesh_for(profile, mode=parent_mode)
         if not raw or expected_parent is None or child != profile.worker_mesh:
             return None
         try:

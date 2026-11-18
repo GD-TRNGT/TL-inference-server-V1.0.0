@@ -24,7 +24,10 @@ from config.constants import (
 from config.vllm_settings import VLLMSettings
 from config.flux3_profiles import (
     canonical_profile_name,
+    flux3_parent_mesh_for,
+    get_flux3_parent_mode,
     get_flux3_profile,
+    is_flux3_parent_mode,
     resolve_flux3_environment_profile,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -232,17 +235,17 @@ class Settings(BaseSettings):
         parent_spec = None
         if requested_profile != "auto":
             profile = get_flux3_profile(requested_profile)
-            if profile.parent_mesh is not None:
+            if profile.supports_parent_mesh:
                 parent_spec = (profile.worker_mesh, profile.parent_mesh)
 
-        parent_mode = os.environ.get(
-            "FLUX3_PARENT_MESH_MODE", "direct"
-        ).strip().lower()
+        parent_mode = get_flux3_parent_mode(
+            os.environ.get("FLUX3_PARENT_MESH_MODE")
+        )
         if (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
             and parent_spec is not None
             and self.device_mesh_shape == parent_spec[0]
-            and parent_mode == "parent"
+            and is_flux3_parent_mode(parent_mode)
         ):
             child_mesh, parent_mesh = parent_spec
             os.environ.setdefault(
@@ -402,11 +405,10 @@ class Settings(BaseSettings):
             if requested_profile == "auto"
             else get_flux3_profile(requested_profile)
         )
-        flux3_profile = profile.name if profile is not None else "auto"
-        parent_mode = os.environ.get(
-            "FLUX3_PARENT_MESH_MODE",
-            "direct" if flux3_profile == "sp4" else "parent",
-        ).strip().lower()
+        parent_mode = get_flux3_parent_mode(
+            os.environ.get("FLUX3_PARENT_MESH_MODE"),
+            default="direct",
+        )
         # Keep the selected default visible to every later startup layer.
         # runner_utils, the base mesh runner, and scheduler all run after
         # Settings construction; leaving this as an implicit local default
@@ -415,7 +417,7 @@ class Settings(BaseSettings):
         if (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
             and profile is not None
-            and profile.parent_mesh is not None
+            and profile.supports_parent_mesh
         ):
             os.environ.setdefault("FLUX3_PARENT_MESH_MODE", parent_mode)
 
@@ -425,9 +427,9 @@ class Settings(BaseSettings):
         if (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
             and profile is not None
-            and profile.parent_mesh is not None
+            and profile.supports_parent_mesh
             and mesh == profile.worker_mesh
-            and parent_mode not in {"0", "false", "off", "direct", "legacy"}
+            and is_flux3_parent_mode(parent_mode)
         ):
             parent_rows, parent_cols = profile.parent_mesh
             os.environ.setdefault(
@@ -435,14 +437,18 @@ class Settings(BaseSettings):
                 f"{parent_rows}x{parent_cols}",
             )
 
+        expected_parent = (
+            flux3_parent_mesh_for(profile, mode=parent_mode)
+            if profile is not None
+            else None
+        )
         parent_submesh = (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
             and profile is not None
-            and profile.parent_mesh is not None
+            and expected_parent is not None
             and mesh == profile.worker_mesh
             and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
-            == f"{profile.parent_mesh[0]}x{profile.parent_mesh[1]}"
-            and parent_mode not in {"0", "false", "off", "direct", "legacy"}
+            == f"{expected_parent[0]}x{expected_parent[1]}"
         )
         if parent_submesh:
             logger.info(
@@ -479,6 +485,9 @@ class Settings(BaseSettings):
 
             elif mesh == (1, 1) and self.use_greedy_based_allocation:
                 devices = dm.get_single_devices()
+
+            elif profile is not None:
+                devices = self._discover_flux3_devices(dm, profile)
 
             elif mesh == (2, 1):
                 logger.info(
@@ -615,6 +624,39 @@ class Settings(BaseSettings):
         )
         logger.info(
             f"_set_device_pairs_overrides: galaxy override applied, device_ids(after)={self.device_ids!r}"
+        )
+
+    @staticmethod
+    def _discover_flux3_devices(dm: DeviceManager, profile):
+        """Discover physical worker groups from the canonical FLUX3 profile.
+
+        The profile describes the logical mesh, while this method maps that
+        description to the topology-aware DeviceManager primitive.  Keeping
+        this translation in one place prevents a new profile from requiring
+        another independent mesh-shape branch in Settings.
+        """
+        kind = profile.discovery_kind
+        if kind == "single":
+            return dm.get_single_devices()
+        if kind == "pairs":
+            return dm.get_device_pairs()
+        if kind == "groups4":
+            return dm.get_device_groups_of_four()
+        if kind == "sp8_ring":
+            return dm.get_flux3_sp8_groups()
+        if kind == "groups8":
+            if (
+                profile.name == "tp2sp4"
+                and os.environ.get("FLUX3_8CHIP_PLACEMENT", "").strip().lower()
+                == "column-pairs"
+            ):
+                logger.info("Using experimental FLUX3 TP2xSP4 column-pair placement")
+                return dm.get_flux3_tp2sp4_column_pair_groups()
+            return dm.get_device_groups_of_eight()
+        if kind == "groups32":
+            return dm.get_device_groups_of_thirty_two()
+        raise ValueError(
+            f"Unsupported FLUX3 discovery kind {kind!r} for profile {profile.name}"
         )
 
     def _set_throttling_overrides(self):

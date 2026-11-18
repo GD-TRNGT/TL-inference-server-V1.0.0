@@ -31,6 +31,16 @@ class Flux3Profile:
     fabric_config: str
     num_links: int
     uses_klein_pipeline: bool
+    # Device discovery is a property of the physical worker group.  Keeping
+    # it here prevents settings.py from growing another mesh-shape switch.
+    discovery_kind: str = "single"
+    # Most profiles shard the VAE over the logical TP axis.  Pure TP2 is the
+    # deliberate exception: its VAE remains replicated until the TP2 VAE path
+    # is validated independently.
+    vae_parallelism: str = "tp_axis"
+    # Startup-only compile shapes.  They do not constrain request geometry.
+    pipeline_warmup_sizes: tuple[int, ...] = (1024, 2048, 4096)
+    runner_warmup_sizes: tuple[int, ...] = (1024, 2048, 4096)
 
     @property
     def tp_degree(self) -> int:
@@ -43,6 +53,10 @@ class Flux3Profile:
         if self.name == "sp2":
             return "sp"
         return self.name
+
+    @property
+    def supports_parent_mesh(self) -> bool:
+        return self.parent_mesh is not None
 
 
 # The descriptor is a property of the physical worker mesh, not of the model
@@ -66,10 +80,12 @@ _PROFILE_DESCRIPTORS = {
 
 _PROFILES = {
     "legacy-single": Flux3Profile(
-        "legacy-single", (1, 1), None, (1, 1), (1, 0), "linear", "disabled", 1, False
+        "legacy-single", (1, 1), None, (1, 1), (1, 0), "linear", "disabled", 1, False,
+        "single", "replicated"
     ),
     "sp2": Flux3Profile(
-        "sp2", (2, 1), (4, 8), (1, 1), (2, 0), "linear", "1d_ring", 1, True
+        "sp2", (2, 1), (4, 8), (1, 1), (2, 0), "linear", "1d_ring", 1, True,
+        "pairs", "tp_axis"
     ),
     "tp2": Flux3Profile(
         # A 2x1 Galaxy child is a line, not a valid 1D ring axis for the
@@ -77,34 +93,46 @@ _PROFILES = {
         # initialized the device but stalled during the first warmup.
         # Keep pure TP2 on the reliable linear path; TP2 still shards the
         # hidden dimension across axis 0.
-        "tp2", (2, 1), (4, 8), (2, 0), (1, 0), "linear", "1d", 1, True
+        "tp2", (2, 1), (4, 8), (2, 0), (1, 0), "linear", "1d", 1, True,
+        "pairs", "replicated", runner_warmup_sizes=(1024,)
     ),
     "sp4": Flux3Profile(
-        "sp4", (4, 1), (4, 8), (1, 1), (4, 0), "ring", "1d_ring", 2, True
+        "sp4", (4, 1), (4, 8), (1, 1), (4, 0), "ring", "1d_ring", 2, True,
+        "groups4", "tp_axis"
     ),
     "tp4": Flux3Profile(
-        "tp4", (4, 1), (4, 8), (4, 0), (1, 0), "ring", "1d_ring", 1, False
+        "tp4", (4, 1), (4, 8), (4, 0), (1, 0), "ring", "1d_ring", 1, False,
+        "groups4", "tp_axis"
     ),
     "tp4axis1": Flux3Profile(
-        "tp4axis1", (1, 4), (4, 8), (4, 1), (1, 0), "ring", "1d_ring", 1, False
+        "tp4axis1", (1, 4), (4, 8), (4, 1), (1, 0), "ring", "1d_ring", 1, False,
+        "groups4", "tp_axis"
     ),
     "tp2sp2": Flux3Profile(
-        "tp2sp2", (2, 2), (8, 4), (2, 0), (2, 1), "linear", "2d", 1, True
+        "tp2sp2", (2, 2), (8, 4), (2, 0), (2, 1), "linear", "2d", 1, True,
+        "groups4", "tp_axis", pipeline_warmup_sizes=(1024, 2048)
     ),
     "tp2sp4": Flux3Profile(
-        "tp2sp4", (2, 4), (8, 4), (2, 0), (4, 1), "linear", "2d", 1, True
+        "tp2sp4", (2, 4), (8, 4), (2, 0), (4, 1), "linear", "2d", 1, True,
+        "groups8", "tp_axis", pipeline_warmup_sizes=(1024, 2048),
+        runner_warmup_sizes=(1024, 2048)
     ),
     "tp4sp2": Flux3Profile(
-        "tp4sp2", (4, 2), (8, 4), (4, 0), (2, 1), "linear", "2d", 1, True
+        "tp4sp2", (4, 2), (8, 4), (4, 0), (2, 1), "linear", "2d", 1, True,
+        "groups8", "tp_axis", pipeline_warmup_sizes=(1024, 2048),
+        runner_warmup_sizes=(1024,)
     ),
     "sp8": Flux3Profile(
-        "sp8", (8, 1), (8, 4), (1, 1), (8, 0), "ring", "1d_ring", 2, True
+        "sp8", (8, 1), (8, 4), (1, 1), (8, 0), "ring", "1d_ring", 2, True,
+        "sp8_ring", "tp_axis"
     ),
     "tp8ring": Flux3Profile(
-        "tp8ring", (1, 8), (4, 8), (8, 1), (1, 0), "ring", "1d_ring", 1, False
+        "tp8ring", (1, 8), (4, 8), (8, 1), (1, 0), "ring", "1d_ring", 1, False,
+        "sp8_ring", "tp_axis"
     ),
     "sp8tp4": Flux3Profile(
-        "sp8tp4", (4, 8), None, (4, 0), (8, 1), "ring", "1d_ring", 2, True
+        "sp8tp4", (4, 8), None, (4, 0), (8, 1), "ring", "1d_ring", 2, True,
+        "groups32", "tp_axis"
     ),
 }
 
@@ -145,6 +173,39 @@ PROFILE_ALIASES = {
     "pure-tp8-ring": "tp8ring",
     "pure_tp8_ring": "tp8ring",
 }
+
+_PARENT_DISABLED_MODES = frozenset({"", "0", "false", "off", "direct", "legacy"})
+_PARENT_ENABLED_MODES = frozenset({"1", "true", "on", "enabled", "parent"})
+
+
+def get_flux3_parent_mode(value: str | None = None, *, default: str = "direct") -> str:
+    """Return the normalized FLUX.3 parent-mesh mode.
+
+    A single helper is used by settings, scheduler, runner utils and the base
+    mesh runner so a stale environment value cannot make only one layer think
+    that parent/child mode is active.
+    """
+    return (default if value is None else value).strip().lower()
+
+
+def is_flux3_parent_mode(value: str | None = None, *, default: str = "direct") -> bool:
+    mode = get_flux3_parent_mode(value, default=default)
+    if mode in _PARENT_DISABLED_MODES:
+        return False
+    if mode in _PARENT_ENABLED_MODES:
+        return True
+    raise ValueError(
+        "FLUX3_PARENT_MESH_MODE must be one of: parent, direct, true, false"
+    )
+
+
+def flux3_parent_mesh_for(
+    profile: Flux3Profile, *, mode: str | None = None, default: str = "direct"
+) -> MeshShape | None:
+    """Return the parent mesh only when this profile is explicitly enabled."""
+    if not profile.supports_parent_mesh or not is_flux3_parent_mode(mode, default=default):
+        return None
+    return profile.parent_mesh
 
 
 def canonical_profile_name(value: str | None) -> str:
