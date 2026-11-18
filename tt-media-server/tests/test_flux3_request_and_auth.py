@@ -27,6 +27,30 @@ def test_flux3_accepts_officially_supported_geometry(flux3_runner, width, height
     assert (request.width, request.height) == (width, height)
 
 
+def test_flux3_four_card_worker_rejects_4096_square(flux3_runner, monkeypatch):
+    monkeypatch.setattr(
+        "domain.image_generate_request.get_settings",
+        lambda: SimpleNamespace(
+            model_runner="tt-flux.3-image-klein",
+            device_mesh_shape=(4, 1),
+        ),
+    )
+    with pytest.raises(ValidationError, match="4-card worker"):
+        ImageGenerateRequest(prompt="a black bird", width=4096, height=4096)
+
+
+def test_flux3_eight_card_worker_accepts_4096_square(flux3_runner, monkeypatch):
+    monkeypatch.setattr(
+        "domain.image_generate_request.get_settings",
+        lambda: SimpleNamespace(
+            model_runner="tt-flux.3-image-klein",
+            device_mesh_shape=(8, 1),
+        ),
+    )
+    request = ImageGenerateRequest(prompt="a black bird", width=4096, height=4096)
+    assert (request.width, request.height) == (4096, 4096)
+
+
 @pytest.mark.parametrize(
     "width,height,reason",
     [
@@ -51,7 +75,6 @@ def test_flux3_sp8_accepts_officially_supported_geometry(
     request = ImageGenerateRequest(prompt="a black bird", width=width, height=height)
 
     assert (request.width, request.height) == (width, height)
-
 
 def test_openai_api_key_is_the_single_supported_deployment_variable(monkeypatch):
     monkeypatch.setenv("API_KEY", "legacy-token")

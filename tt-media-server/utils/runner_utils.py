@@ -5,12 +5,7 @@
 import os
 
 from config.constants import DeviceTypes, ModelRunners
-from config.flux3_profiles import (
-    flux3_parent_mesh_for,
-    get_flux3_descriptor,
-    get_flux3_parent_mode,
-    resolve_flux3_profile,
-)
+from config.flux3_policy import resolve_flux3_mesh_plan
 from config.settings import settings
 from telemetry.telemetry_client import get_telemetry_client
 
@@ -181,9 +176,12 @@ def _setup_blackhole_mesh_config(tt_metal_home: str):
         )
 
 
-def _flux3_runtime_profile():
-    """Resolve the one profile used by settings, discovery and the runner."""
-    return resolve_flux3_profile(tuple(getattr(settings, "device_mesh_shape", (1, 1))))
+def _flux3_runtime_plan():
+    """Resolve the canonical profile and optional parent mesh together."""
+    return resolve_flux3_mesh_plan(
+        tuple(getattr(settings, "device_mesh_shape", (1, 1))),
+        parent_mode=os.environ.get("FLUX3_PARENT_MESH_MODE"),
+    )
 
 
 def _descriptor_path(tt_metal_home: str, descriptor: str) -> str:
@@ -223,13 +221,13 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
             )
         return
 
-    profile = _flux3_runtime_profile()
+    plan = _flux3_runtime_plan()
+    profile = plan.profile
     # Settings selects parent mode explicitly for deployments that own the
     # complete Galaxy. Direct mode remains the safe standalone default and keeps
     # this helper usable by isolated workers and unit tests.
-    parent_mode = get_flux3_parent_mode(os.environ.get("FLUX3_PARENT_MESH_MODE"))
-    parent_mesh = flux3_parent_mesh_for(profile, mode=parent_mode)
-    parent_enabled = parent_mesh is not None
+    parent_mesh = plan.parent_mesh
+    parent_enabled = plan.parent_enabled
 
     if parent_enabled:
         rows, cols = parent_mesh
@@ -267,7 +265,7 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
     ):
         os.environ.pop(variable, None)
 
-    descriptor = get_flux3_descriptor(profile)
+    descriptor = plan.descriptor
     if descriptor:
         os.environ["TT_MESH_GRAPH_DESC_PATH"] = _descriptor_path(
             tt_metal_home, descriptor

@@ -22,12 +22,11 @@ from config.constants import (
     SupportedModels,
 )
 from config.vllm_settings import VLLMSettings
+from config.flux3_policy import resolve_flux3_mesh_plan
 from config.flux3_profiles import (
     canonical_profile_name,
-    flux3_parent_mesh_for,
     get_flux3_parent_mode,
     get_flux3_profile,
-    is_flux3_parent_mode,
     resolve_flux3_environment_profile,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -232,34 +231,33 @@ class Settings(BaseSettings):
         requested_profile = canonical_profile_name(
             os.environ.get("FLUX3_EXECUTION_PROFILE", "")
         )
-        parent_spec = None
-        if requested_profile != "auto":
-            profile = get_flux3_profile(requested_profile)
-            if profile.supports_parent_mesh:
-                parent_spec = (profile.worker_mesh, profile.parent_mesh)
-
         parent_mode = get_flux3_parent_mode(
             os.environ.get("FLUX3_PARENT_MESH_MODE")
         )
+        parent_plan = None
         if (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and parent_spec is not None
-            and self.device_mesh_shape == parent_spec[0]
-            and is_flux3_parent_mode(parent_mode)
+            and requested_profile != "auto"
         ):
-            child_mesh, parent_mesh = parent_spec
+            parent_plan = resolve_flux3_mesh_plan(
+                tuple(self.device_mesh_shape),
+                requested=requested_profile,
+                parent_mode=parent_mode,
+            )
+        if parent_plan is not None and parent_plan.parent_enabled:
+            parent_rows, parent_cols = parent_plan.parent_mesh
             os.environ.setdefault(
                 "FLUX3_PARENT_MESH_SHAPE",
-                f"{parent_mesh[0]}x{parent_mesh[1]}",
+                f"{parent_rows}x{parent_cols}",
             )
             # A parent mesh is process-global on Galaxy. One process owns the
             # complete parent and selects one child; independent workers use
             # direct mode instead.
             os.environ.setdefault("FLUX3_PARENT_MESH_WORKERS", "1")
             logger.info(
-                f"Enabled FLUX3 {requested_profile.upper()} parent mesh: "
-                f"parent={parent_mesh[0]}x{parent_mesh[1]}, "
-                f"child={child_mesh}, workers=1"
+                f"Enabled FLUX3 {parent_plan.profile.name.upper()} parent mesh: "
+                f"parent={parent_rows}x{parent_cols}, "
+                f"child={parent_plan.child_mesh}, workers=1"
             )
 
         if self.model_service is None:
@@ -421,32 +419,33 @@ class Settings(BaseSettings):
         ):
             os.environ.setdefault("FLUX3_PARENT_MESH_MODE", parent_mode)
 
+        parent_plan = (
+            resolve_flux3_mesh_plan(
+                mesh,
+                requested=profile.name,
+                parent_mode=parent_mode,
+            )
+            if (
+                self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+                and profile is not None
+            )
+            else None
+        )
+
         # Settings is constructed before worker_utils starts the runner. Export
         # the profile's parent shape here so the scheduler can hand one full
         # Galaxy group to the process and the runner can select its child view.
-        if (
-            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and profile is not None
-            and profile.supports_parent_mesh
-            and mesh == profile.worker_mesh
-            and is_flux3_parent_mode(parent_mode)
-        ):
-            parent_rows, parent_cols = profile.parent_mesh
+        if parent_plan is not None and parent_plan.parent_enabled:
+            parent_rows, parent_cols = parent_plan.parent_mesh
             os.environ.setdefault(
                 "FLUX3_PARENT_MESH_SHAPE",
                 f"{parent_rows}x{parent_cols}",
             )
-
-        expected_parent = (
-            flux3_parent_mesh_for(profile, mode=parent_mode)
-            if profile is not None
-            else None
-        )
+        expected_parent = parent_plan.parent_mesh if parent_plan is not None else None
         parent_submesh = (
-            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and profile is not None
-            and expected_parent is not None
-            and mesh == profile.worker_mesh
+            parent_plan is not None
+            and parent_plan.parent_enabled
+            and mesh == parent_plan.child_mesh
             and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
             == f"{expected_parent[0]}x{expected_parent[1]}"
         )

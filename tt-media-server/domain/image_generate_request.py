@@ -5,25 +5,27 @@
 import base64
 import binascii
 import io
-import math
 import warnings
 from typing import List, Literal, Optional, Tuple, Union
 
 from PIL import Image
 
 from config.settings import get_settings
+from config.flux3_policy import (
+    FLUX3_MAX_RESOLUTION as _FLUX3_MAX_RESOLUTION,
+    FLUX3_MIN_RESOLUTION as _FLUX3_MIN_RESOLUTION,
+    FLUX3_RUNNER as _FLUX3_RUNNER,
+    validate_flux3_geometry,
+)
 from domain.base_request import BaseRequest
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 # Flux models support fewer inference steps than other image models
 _FLUX_RUNNERS = {"tt-flux.1-dev", "tt-flux.1-schnell", "tt-flux.1-kontext-dev"}
-_FLUX3_RUNNER = "tt-flux.3-image-klein"
 _DEFAULT_MAX_RESOLUTION = 1536
 # The official FLUX.3 reference accepts any output whose two sides are a
 # multiple of the VAE downsampling ratio. The smallest non-zero valid image is
 # therefore 16x16. Its model card advertises an upper bound of 4K per side.
-_FLUX3_MIN_RESOLUTION = 16
-_FLUX3_MAX_RESOLUTION = 4096
 _FLUX3_SHAPE_MULTIPLE = 16
 _FLUX_MIN_INFERENCE_STEPS = 4
 _DEFAULT_MIN_INFERENCE_STEPS = 12
@@ -98,11 +100,14 @@ class BaseImageRequest(BaseRequest):
                     f"{model_runner}, got {value}"
                 )
         if model_runner == _FLUX3_RUNNER and self.width is not None:
-            if self.width % _FLUX3_SHAPE_MULTIPLE or self.height % _FLUX3_SHAPE_MULTIPLE:
-                raise ValueError(
-                    "FLUX.3 width and height must be multiples of "
-                    f"{_FLUX3_SHAPE_MULTIPLE}; got {self.width}x{self.height}"
-                )
+            validate_flux3_geometry(
+                self.width,
+                self.height,
+                model_runner=model_runner,
+                mesh_shape=tuple(
+                    getattr(get_settings(), "device_mesh_shape", (1, 1)) or (1, 1)
+                ),
+            )
         return self
 
     @model_validator(mode="after")

@@ -8,6 +8,7 @@ from config.flux3_profiles import (
     resolve_flux3_environment_profile,
     resolve_flux3_profile,
 )
+from config.flux3_policy import resolve_flux3_mesh_plan
 
 
 @pytest.mark.parametrize(
@@ -122,3 +123,14 @@ def test_parent_mesh_requires_explicit_non_direct_mode():
     assert flux3_parent_mesh_for(profile, mode="direct") is None
     assert is_flux3_parent_mode("parent")
     assert flux3_parent_mesh_for(profile, mode="parent") == (4, 8)
+
+
+def test_mesh_plan_keeps_direct_and_parent_modes_consistent(monkeypatch):
+    monkeypatch.setenv("FLUX3_EXECUTION_PROFILE", "sp4")
+    direct = resolve_flux3_mesh_plan((4, 1), parent_mode="direct")
+    parent = resolve_flux3_mesh_plan((4, 1), parent_mode="parent")
+    assert direct.child_mesh == (4, 1)
+    assert direct.parent_mesh is None
+    assert parent.child_mesh == (4, 1)
+    assert parent.parent_mesh == (4, 8)
+    assert parent.descriptor

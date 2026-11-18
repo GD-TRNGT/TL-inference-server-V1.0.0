@@ -13,12 +13,8 @@ from threading import Lock
 from typing import Any
 
 from config.constants import CANARY_TASK_IDS, SHUTDOWN_SIGNAL, ModelServices, QueueType
-from config.flux3_profiles import (
-    canonical_profile_name,
-    flux3_parent_mesh_for,
-    get_flux3_parent_mode,
-    get_flux3_profile,
-)
+from config.flux3_policy import resolve_flux3_mesh_plan
+from config.flux3_profiles import canonical_profile_name
 from config.settings import get_settings
 from device_workers.device_worker import device_worker
 from device_workers.device_worker_dynamic_batch import (
@@ -312,24 +308,19 @@ class Scheduler:
         requested_profile = canonical_profile_name(
             os.environ.get("FLUX3_EXECUTION_PROFILE", "")
         )
-        profile = (
-            None
-            if requested_profile == "auto"
-            else get_flux3_profile(requested_profile)
-        )
-        parent_mesh = (
-            flux3_parent_mesh_for(
-                profile,
-                mode=get_flux3_parent_mode(
-                    os.environ.get("FLUX3_PARENT_MESH_MODE")
-                ),
+        parent_plan = (
+            resolve_flux3_mesh_plan(
+                tuple(self.settings.device_mesh_shape),
+                requested=requested_profile,
+                parent_mode=os.environ.get("FLUX3_PARENT_MESH_MODE"),
             )
-            if profile is not None
+            if requested_profile != "auto"
             else None
         )
+        parent_mesh = parent_plan.parent_mesh if parent_plan is not None else None
         if (
             parent_mesh is not None
-            and tuple(self.settings.device_mesh_shape) == profile.worker_mesh
+            and tuple(self.settings.device_mesh_shape) == parent_plan.child_mesh
             and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
             == f"{parent_mesh[0]}x{parent_mesh[1]}"
             and "::submesh=" not in worker_id

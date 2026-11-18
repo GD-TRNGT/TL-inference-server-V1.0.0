@@ -30,6 +30,7 @@ from config.constants import (
     wan22_target_resolution,
 )
 from config.settings import get_settings
+from config.flux3_policy import validate_flux3_geometry
 from config.flux3_profiles import resolve_flux3_profile
 from domain.image_generate_request import ImageGenerateRequest
 from domain.video_generate_request import VideoGenerateRequest
@@ -734,6 +735,14 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             request = requests[0]
             if request.negative_prompt:
                 raise ValueError("The upstream FLUX.3 Klein API does not accept negative_prompt")
+            validate_flux3_geometry(
+                int(request.width or 2048),
+                int(request.height or 2048),
+                model_runner=self.settings.model_runner,
+                mesh_shape=tuple(
+                    getattr(self.settings, "device_mesh_shape", (1, 1)) or (1, 1)
+                ),
+            )
             reference_payloads = getattr(request, "reference_images", None)
             reference_payload = getattr(request, "reference_image", None)
             legacy_image_payload = getattr(request, "image", None)

@@ -6,11 +6,9 @@
 import os
 
 import ttnn
+from config.flux3_policy import resolve_flux3_mesh_plan
 from config.flux3_profiles import (
     canonical_profile_name,
-    flux3_parent_mesh_for,
-    get_flux3_parent_mode,
-    get_flux3_profile,
 )
 from tt_model_runners.base_device_runner import BaseDeviceRunner
 
@@ -181,10 +179,6 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
         Profile metadata is owned by ``config.flux3_profiles`` so the base
         device runner does not carry a second, diverging FLUX3 profile table.
         """
-        parent_mode = get_flux3_parent_mode(
-            os.environ.get("FLUX3_PARENT_MESH_MODE")
-        )
-
         raw = os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
         child = tuple(self.settings.device_mesh_shape)
         profile_name = canonical_profile_name(
@@ -192,9 +186,13 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
         )
         if profile_name == "auto":
             return None
-        profile = get_flux3_profile(profile_name)
-        expected_parent = flux3_parent_mesh_for(profile, mode=parent_mode)
-        if not raw or expected_parent is None or child != profile.worker_mesh:
+        plan = resolve_flux3_mesh_plan(
+            child,
+            requested=profile_name,
+            parent_mode=os.environ.get("FLUX3_PARENT_MESH_MODE"),
+        )
+        expected_parent = plan.parent_mesh
+        if not raw or expected_parent is None or child != plan.child_mesh:
             return None
         try:
             rows, cols = (
@@ -212,7 +210,7 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
             )
         if (rows, cols) != expected_parent:
             raise RuntimeError(
-                f"FLUX3_EXECUTION_PROFILE={profile.name} requires parent mesh "
+                f"FLUX3_EXECUTION_PROFILE={plan.profile.name} requires parent mesh "
                 f"{expected_parent[0]}x{expected_parent[1]}, got {raw!r}"
             )
         return (rows, cols)
