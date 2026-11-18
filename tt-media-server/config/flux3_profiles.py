@@ -231,5 +231,89 @@ def resolve_flux3_profile(
     return profile
 
 
+def resolve_flux3_environment_profile() -> Flux3Profile | None:
+    """Resolve explicit and legacy FLUX.3 environment settings to one profile.
+
+    FLUX3_EXECUTION_PROFILE is canonical. The older TP/SP variables remain
+    accepted as compatibility inputs, but all interpretation lives here so
+    settings, discovery, and runners cannot maintain different mesh rules.
+    """
+    requested = canonical_profile_name(os.environ.get("FLUX3_EXECUTION_PROFILE"))
+    explicit_profile = requested != "auto"
+    tp_size_raw = os.environ.get("FLUX3_TP_SIZE")
+    parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
+    tp_mesh = os.environ.get("FLUX3_TP_MESH", "").strip().lower().replace(" ", "")
+
+    if requested != "auto":
+        profile = get_flux3_profile(requested)
+    elif tp_size_raw is None:
+        return None
+    else:
+        try:
+            tp_size = int(tp_size_raw)
+        except ValueError as exc:
+            raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, 4, or 8") from exc
+
+        if parallelism == "sp8":
+            if tp_size != 1:
+                raise ValueError("FLUX3_PARALLELISM=sp8 requires FLUX3_TP_SIZE=1")
+            profile = get_flux3_profile("sp8")
+        elif parallelism == "sp8tp4":
+            if tp_size != 4:
+                raise ValueError("FLUX3_PARALLELISM=sp8tp4 requires FLUX3_TP_SIZE=4")
+            profile = get_flux3_profile("sp8tp4")
+        else:
+            if parallelism not in {"", "tp", "sp"}:
+                raise ValueError(
+                    "FLUX3_PARALLELISM must be 'tp', 'sp', 'sp8', or 'sp8tp4'"
+                )
+            if tp_size == 1:
+                profile = get_flux3_profile("legacy-single")
+            elif tp_size == 2:
+                profile = get_flux3_profile("sp2" if parallelism == "sp" else "tp2")
+            elif tp_size == 4:
+                selected_mesh = tp_mesh or "1x4"
+                if selected_mesh == "1x4":
+                    profile = get_flux3_profile("tp4axis1")
+                elif selected_mesh == "4x1":
+                    profile = get_flux3_profile("sp4" if parallelism == "sp" else "tp4")
+                else:
+                    raise ValueError("FLUX3_TP_MESH must be '1x4' or '4x1'")
+            elif tp_size == 8:
+                if (tp_mesh or "1x8") != "1x8":
+                    raise ValueError("pure FLUX.3 TP8 requires FLUX3_TP_MESH='1x8'")
+                profile = get_flux3_profile("tp8ring")
+            else:
+                raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, 4, or 8")
+
+    expected_mesh = f"{profile.worker_mesh[0]}x{profile.worker_mesh[1]}"
+    if explicit_profile and tp_size_raw is not None:
+        try:
+            requested_tp = int(tp_size_raw)
+        except ValueError as exc:
+            raise ValueError("FLUX3_TP_SIZE must be an integer") from exc
+        if requested_tp != profile.tp_degree:
+            raise ValueError(
+                f"FLUX3_EXECUTION_PROFILE={profile.name} requires TP{profile.tp_degree}; "
+                f"got FLUX3_TP_SIZE={tp_size_raw}"
+            )
+    if explicit_profile and tp_mesh and tp_mesh != expected_mesh:
+        raise ValueError(
+            f"FLUX3_EXECUTION_PROFILE={profile.name} requires "
+            f"FLUX3_TP_MESH={expected_mesh}; got {tp_mesh}"
+        )
+    if explicit_profile and parallelism:
+        normalized_parallelism = parallelism
+        if normalized_parallelism not in {"tp", "sp"}:
+            normalized_parallelism = canonical_profile_name(normalized_parallelism)
+        if normalized_parallelism != profile.canonical_parallelism:
+            raise ValueError(
+                f"FLUX3_EXECUTION_PROFILE={profile.name} requires "
+                f"FLUX3_PARALLELISM={profile.canonical_parallelism}; "
+                f"got {parallelism}"
+            )
+    return profile
+
+
 def expected_profile_names() -> tuple[str, ...]:
     return tuple(sorted(_PROFILES))

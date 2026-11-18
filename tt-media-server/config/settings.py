@@ -22,7 +22,11 @@ from config.constants import (
     SupportedModels,
 )
 from config.vllm_settings import VLLMSettings
-from config.flux3_profiles import get_flux3_profile, canonical_profile_name
+from config.flux3_profiles import (
+    canonical_profile_name,
+    get_flux3_profile,
+    resolve_flux3_environment_profile,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from utils.device_manager import DeviceManager
 from utils.logger import TTLogger
@@ -637,147 +641,41 @@ class Settings(BaseSettings):
             self.default_throttle_level = None
 
     def _set_mesh_overrides(self):
-        flux3_profile = os.getenv("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
+        if self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value:
+            profile = resolve_flux3_environment_profile()
+            if profile is not None:
+                self.device_mesh_shape = profile.worker_mesh
+                self.is_galaxy = profile.name != "legacy-single"
+                # Publish one canonical configuration to downstream layers.
+                os.environ["FLUX3_EXECUTION_PROFILE"] = profile.name
+                os.environ["FLUX3_TP_SIZE"] = str(profile.tp_degree)
+                os.environ["FLUX3_TP_MESH"] = (
+                    f"{profile.worker_mesh[0]}x{profile.worker_mesh[1]}"
+                )
+                os.environ["FLUX3_PARALLELISM"] = profile.canonical_parallelism
+                if (
+                    profile.name != "legacy-single"
+                    and "NEW_DEVICE_DELAY_SECONDS" not in os.environ
+                ):
+                    self.new_device_delay_seconds = 10
+                    logger.info(
+                        f"Applied FLUX.3 {profile.name.upper()} fixed "
+                        "worker-start delay: 10 seconds"
+                    )
+                logger.info(
+                    f"Applied FLUX.3 execution profile {profile.name}: "
+                    f"mesh={self.device_mesh_shape}, is_galaxy={self.is_galaxy}"
+                )
+                return
+
         if (
-            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and flux3_profile not in {"", "auto"}
+            self.model_runner != ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
+            and os.getenv("FLUX3_TP_SIZE") is not None
         ):
-            profile = get_flux3_profile(flux3_profile)
-            flux3_profile = profile.name
-            expected_tp = profile.tp_degree
-            expected_mesh = profile.worker_mesh
-            canonical_parallelism = profile.canonical_parallelism
-
-            # FLUX3_EXECUTION_PROFILE is the canonical public setting.  The
-            # older knobs remain accepted only as compatibility aliases, and
-            # must agree with the selected profile instead of silently being
-            # overwritten.
-            requested_tp = os.getenv("FLUX3_TP_SIZE")
-            if requested_tp is not None:
-                try:
-                    requested_tp_int = int(requested_tp)
-                except ValueError as exc:
-                    raise ValueError("FLUX3_TP_SIZE must be an integer") from exc
-                if requested_tp_int != expected_tp:
-                    raise ValueError(
-                        f"FLUX3_EXECUTION_PROFILE={flux3_profile} requires TP{expected_tp}; "
-                        f"got FLUX3_TP_SIZE={requested_tp}"
-                    )
-
-            requested_mesh = os.getenv("FLUX3_TP_MESH")
-            if requested_mesh is not None:
-                normalized_mesh = requested_mesh.strip().lower().replace(" ", "")
-                expected_mesh_text = f"{expected_mesh[0]}x{expected_mesh[1]}"
-                if normalized_mesh != expected_mesh_text:
-                    raise ValueError(
-                        f"FLUX3_EXECUTION_PROFILE={flux3_profile} requires "
-                        f"FLUX3_TP_MESH={expected_mesh_text}; got {requested_mesh}"
-                    )
-
-            requested_parallelism = os.getenv("FLUX3_PARALLELISM")
-            if requested_parallelism is not None:
-                normalized_parallelism = requested_parallelism.strip().lower()
-                if normalized_parallelism not in {"tp", "sp"}:
-                    normalized_parallelism = canonical_profile_name(normalized_parallelism)
-                if normalized_parallelism != canonical_parallelism:
-                    raise ValueError(
-                        f"FLUX3_EXECUTION_PROFILE={flux3_profile} requires "
-                        f"FLUX3_PARALLELISM={canonical_parallelism}; "
-                        f"got {requested_parallelism}"
-                    )
-
-            self.device_mesh_shape = expected_mesh
-            self.is_galaxy = flux3_profile != "legacy-single"
-            # Publish one canonical, internally-derived configuration to the
-            # runner.  Users only need to set FLUX3_EXECUTION_PROFILE.
-            os.environ["FLUX3_TP_SIZE"] = str(expected_tp)
-            os.environ["FLUX3_TP_MESH"] = f"{expected_mesh[0]}x{expected_mesh[1]}"
-            os.environ["FLUX3_PARALLELISM"] = canonical_parallelism
-            # Galaxy workers must not initialize concurrently.  TT-Metal's
-            # Inspector/MPI bootstrap uses process-global resources on the
-            # host, so starting eight SP4 workers back-to-back can make them
-            # race before the device runtime is ready.  Use a fixed
-            # start-to-start interval for every multi-chip FLUX.3 profile;
-            # one-worker profiles are unaffected because there is no next
-            # worker to delay.
-            if flux3_profile != "legacy-single" and "NEW_DEVICE_DELAY_SECONDS" not in os.environ:
-                self.new_device_delay_seconds = 10
-                logger.info(
-                    f"Applied FLUX.3 {flux3_profile.upper()} fixed worker-start delay: 10 seconds"
-                )
-            logger.info(
-                f"Applied FLUX.3 execution profile {flux3_profile}: "
-                f"mesh={self.device_mesh_shape}, is_galaxy={self.is_galaxy}"
+            raise ValueError(
+                "FLUX3_TP_SIZE is only supported by "
+                "MODEL_RUNNER=tt-flux.3-image-klein"
             )
-            return
-
-        flux3_tp_size = os.getenv("FLUX3_TP_SIZE")
-        if flux3_tp_size is not None:
-            if self.model_runner != ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value:
-                raise ValueError(
-                    "FLUX3_TP_SIZE is only supported by "
-                    "MODEL_RUNNER=tt-flux.3-image-klein"
-                )
-            try:
-                tp_size = int(flux3_tp_size)
-            except ValueError as exc:
-                raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, 4, or 8") from exc
-            flux3_parallelism = os.getenv("FLUX3_PARALLELISM", "tp").strip().lower()
-            if flux3_parallelism == "sp8":
-                if tp_size != 1:
-                    raise ValueError("FLUX3_PARALLELISM=sp8 requires FLUX3_TP_SIZE=1")
-                # TP1 x SP8: one worker per physical eight-chip Galaxy tray.
-                self.device_mesh_shape = (8, 1)
-                self.is_galaxy = True
-                logger.info(
-                    "Applied FLUX.3 SP8 override: FLUX3_TP_SIZE=1, mesh=(8,1)"
-                )
-                return
-            if flux3_parallelism == "sp8tp4":
-                if tp_size != 4:
-                    raise ValueError("FLUX3_PARALLELISM=sp8tp4 requires FLUX3_TP_SIZE=4")
-                # One 32-chip worker: axis 0 is TP4 and axis 1 is SP8.
-                self.device_mesh_shape = (4, 8)
-                self.is_galaxy = True
-                logger.info(
-                    "Applied FLUX.3 SP8xTP4 override: FLUX3_TP_SIZE=4, "
-                    "mesh=(4, 8), is_galaxy=True"
-                )
-                return
-            if flux3_parallelism not in {"tp", "sp"}:
-                raise ValueError(
-                    "FLUX3_PARALLELISM must be 'tp', 'sp', 'sp8', or 'sp8tp4'"
-                )
-            # TP4 is pure tensor parallelism.  A physical 2x2 N300 group can
-            # be exposed as either logical 1x4 (axis 1) or logical 4x1 (axis 0)
-            # Ring mesh; choose explicitly so their CCL behaviour can be compared.
-            flux3_meshes = {1: (1, 1), 2: (2, 1)}
-            if tp_size == 8:
-                tp_mesh = os.getenv("FLUX3_TP_MESH", "1x8").strip().lower()
-                if tp_mesh != "1x8":
-                    raise ValueError("pure FLUX.3 TP8 requires FLUX3_TP_MESH='1x8'")
-                self.device_mesh_shape = (1, 8)
-                self.is_galaxy = True
-                logger.info(
-                    "Applied FLUX.3 pure TP8 Ring override: "
-                    "FLUX3_TP_SIZE=8, mesh=(1,8), is_galaxy=True"
-                )
-                return
-            if tp_size == 4:
-                tp_mesh = os.getenv("FLUX3_TP_MESH", "1x4").strip().lower()
-                if tp_mesh not in {"1x4", "4x1"}:
-                    raise ValueError("FLUX3_TP_MESH must be '1x4' or '4x1'")
-                self.device_mesh_shape = (1, 4) if tp_mesh == "1x4" else (4, 1)
-            elif tp_size in flux3_meshes:
-                self.device_mesh_shape = flux3_meshes[tp_size]
-            else:
-                raise ValueError("FLUX3_TP_SIZE must be one of 1, 2, 4, or 8")
-            self.is_galaxy = tp_size > 1
-            logger.info(
-                f"Applied FLUX.3 TP override: FLUX3_TP_SIZE={tp_size}, "
-                f"mesh={self.device_mesh_shape}, is_galaxy={self.is_galaxy}"
-            )
-            return
 
         env_mesh_map = {
             "SD_3_5_FAST": (4, 8),

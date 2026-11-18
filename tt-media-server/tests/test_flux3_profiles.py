@@ -3,6 +3,7 @@ import pytest
 from config.flux3_profiles import (
     canonical_profile_name,
     get_flux3_profile,
+    resolve_flux3_environment_profile,
     resolve_flux3_profile,
 )
 
@@ -29,6 +30,47 @@ def test_explicit_profile_matches_worker_mesh(monkeypatch, name, mesh):
     profile = resolve_flux3_profile(mesh)
     assert profile.name == name
     assert profile.worker_mesh == mesh
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"FLUX3_TP_SIZE": "2", "FLUX3_PARALLELISM": "sp"}, ("sp2", (2, 1))),
+        ({"FLUX3_TP_SIZE": "2", "FLUX3_PARALLELISM": "tp"}, ("tp2", (2, 1))),
+        (
+            {"FLUX3_TP_SIZE": "4", "FLUX3_TP_MESH": "4x1"},
+            ("tp4", (4, 1)),
+        ),
+        (
+            {
+                "FLUX3_TP_SIZE": "4",
+                "FLUX3_TP_MESH": "4x1",
+                "FLUX3_PARALLELISM": "sp",
+            },
+            ("sp4", (4, 1)),
+        ),
+        (
+            {"FLUX3_TP_SIZE": "8", "FLUX3_TP_MESH": "1x8"},
+            ("tp8ring", (1, 8)),
+        ),
+        ({"FLUX3_TP_SIZE": "1", "FLUX3_PARALLELISM": "sp8"}, ("sp8", (8, 1))),
+    ],
+)
+def test_legacy_environment_resolves_through_canonical_profiles(
+    monkeypatch, env, expected
+):
+    for key in (
+        "FLUX3_EXECUTION_PROFILE",
+        "FLUX3_TP_SIZE",
+        "FLUX3_TP_MESH",
+        "FLUX3_PARALLELISM",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    profile = resolve_flux3_environment_profile()
+    assert (profile.name, profile.worker_mesh) == expected
 
 
 def test_four_chip_auto_requires_semantics(monkeypatch):
