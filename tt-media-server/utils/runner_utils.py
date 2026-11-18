@@ -252,6 +252,18 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         )
         return
 
+    # A previous parent-mode startup may have left these variables in
+    # the container environment. Direct mode must be self-contained:
+    # otherwise BaseMetalDeviceRunner could mistake a stale parent shape
+    # for an active parent mesh.
+    for variable in (
+        "FLUX3_PARENT_MESH_SHAPE",
+        "FLUX3_PARENT_MESH_WORKERS",
+        "FLUX3_PARENT_FABRIC_CONFIG",
+        "FLUX3_SUBMESH_INDEX",
+    ):
+        os.environ.pop(variable, None)
+
     descriptor = get_flux3_descriptor(profile)
     if descriptor:
         os.environ["TT_MESH_GRAPH_DESC_PATH"] = _descriptor_path(

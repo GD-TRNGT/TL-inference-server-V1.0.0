@@ -176,6 +176,12 @@ class BaseMetalDeviceRunner(BaseDeviceRunner):
         Profile metadata is owned by ``config.flux3_profiles`` so the base
         device runner does not carry a second, diverging FLUX3 profile table.
         """
+        parent_mode = os.environ.get(
+            "FLUX3_PARENT_MESH_MODE", "direct"
+        ).strip().lower()
+        if parent_mode in {"", "0", "false", "off", "direct", "legacy"}:
+            return None
+
         raw = os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
         child = tuple(self.settings.device_mesh_shape)
         profile_name = canonical_profile_name(

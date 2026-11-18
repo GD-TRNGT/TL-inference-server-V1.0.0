@@ -222,9 +222,10 @@ class Settings(BaseSettings):
         self._set_mesh_overrides()
         logger.info(f"After mesh overrides: device_mesh_shape={self.device_mesh_shape}")
 
-        # FLUX.3 multi-worker Galaxy profiles can use one physical 32-chip
-        # parent mesh and independent child meshes. Keep the old per-worker
-        # discovery path available with FLUX3_PARENT_MESH_MODE=legacy.
+        # Parent/child mode follows the SD35 lifecycle: one process owns one
+        # complete physical parent mesh and selects one child mesh. Multi-worker
+        # deployments use direct mode so each process owns a distinct physical
+        # worker group.
         requested_profile = canonical_profile_name(
             os.environ.get("FLUX3_EXECUTION_PROFILE", "")
         )
