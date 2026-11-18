@@ -221,49 +221,37 @@ class Settings(BaseSettings):
         # FLUX.3 multi-worker Galaxy profiles can use one physical 32-chip
         # parent mesh and independent child meshes. Keep the old per-worker
         # discovery path available with FLUX3_PARENT_MESH_MODE=legacy.
-        flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
-        flux3_parent_layouts = {
-            "sp2": ((2, 1), "4x8"),
-            "tp2": ((2, 1), "4x8"),
-            "tp2sp4": ((2, 4), "8x4"),
-            "tp2sp2": ((2, 2), "8x4"),
-            "tp4sp2": ((4, 2), "8x4"),
-            "tp4axis1": ((1, 4), "4x8"),
-            "sp8": ((8, 1), "8x4"),
-            "tp8ring": ((1, 8), "4x8"),
-        }
-        flux3_profile = {
-            "tp2-sp4": "tp2sp4",
-            "tp2-sp2": "tp2sp2",
-            "sp2tp2": "tp2sp2",
-            "sp2-tp2": "tp2sp2",
-            "sp4tp2": "tp2sp4",
-            "sp4-tp2": "tp2sp4",
-            "tp4-sp2": "tp4sp2",
-            "sp2tp4": "tp4sp2",
-            "sp2-tp4": "tp4sp2",
-            "tp8-ring": "tp8ring",
-            "pure-tp8-ring": "tp8ring",
-            "pure_tp8_ring": "tp8ring",
-            "tp4-axis1": "tp4axis1",
-            "tp4_axis1": "tp4axis1",
-        }.get(flux3_profile, flux3_profile)
-        parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "direct").strip().lower()
-        parent_spec = flux3_parent_layouts.get(flux3_profile)
+        requested_profile = canonical_profile_name(
+            os.environ.get("FLUX3_EXECUTION_PROFILE", "")
+        )
+        parent_spec = None
+        if requested_profile != "auto":
+            profile = get_flux3_profile(requested_profile)
+            if profile.parent_mesh is not None:
+                parent_spec = (profile.worker_mesh, profile.parent_mesh)
+
+        parent_mode = os.environ.get(
+            "FLUX3_PARENT_MESH_MODE", "direct"
+        ).strip().lower()
         if (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
             and parent_spec is not None
             and self.device_mesh_shape == parent_spec[0]
             and parent_mode == "parent"
         ):
-            os.environ.setdefault("FLUX3_PARENT_MESH_SHAPE", parent_spec[1])
-            # A parent mesh is process-global on Galaxy.  One process owns the
+            child_mesh, parent_mesh = parent_spec
+            os.environ.setdefault(
+                "FLUX3_PARENT_MESH_SHAPE",
+                f"{parent_mesh[0]}x{parent_mesh[1]}",
+            )
+            # A parent mesh is process-global on Galaxy. One process owns the
             # complete parent and selects one child; independent workers use
             # direct mode instead.
             os.environ.setdefault("FLUX3_PARENT_MESH_WORKERS", "1")
             logger.info(
-                f"Enabled FLUX3 {flux3_profile.upper()} parent mesh: "
-                f"parent={parent_spec[1]}, child={parent_spec[0]}, workers=1"
+                f"Enabled FLUX3 {requested_profile.upper()} parent mesh: "
+                f"parent={parent_mesh[0]}x{parent_mesh[1]}, "
+                f"child={child_mesh}, workers=1"
             )
 
         if self.model_service is None:
@@ -401,41 +389,44 @@ class Settings(BaseSettings):
         dm = DeviceManager()
         devices = []
         mesh = self.device_mesh_shape
-        flux3_profile = os.environ.get("FLUX3_EXECUTION_PROFILE", "").strip().lower()
-        flux3_profile = {
-            "sp-4": "sp4",
-            "tp-4": "tp4",
-        }.get(flux3_profile, flux3_profile)
-        parent_mode = os.environ.get("FLUX3_PARENT_MESH_MODE", "direct" if flux3_profile == "sp4" else "parent").strip().lower()
-        # Make the SD3.5-style parent/child path automatic for four-chip
-        # FLUX3 workers.  Settings is constructed before worker_utils calls
-        # setup_runner_environment(), so the parent shape must be exported
-        # here; otherwise discovery would hand every worker only a 4-chip
-        # partial mesh and the scheduler could not attach submesh indices.
+        requested_profile = canonical_profile_name(
+            os.environ.get("FLUX3_EXECUTION_PROFILE", "")
+        )
+        profile = (
+            None
+            if requested_profile == "auto"
+            else get_flux3_profile(requested_profile)
+        )
+        flux3_profile = profile.name if profile is not None else "auto"
+        parent_mode = os.environ.get(
+            "FLUX3_PARENT_MESH_MODE",
+            "direct" if flux3_profile == "sp4" else "parent",
+        ).strip().lower()
+
+        # Settings is constructed before worker_utils starts the runner. Export
+        # the profile's parent shape here so the scheduler can hand one full
+        # Galaxy group to the process and the runner can select its child view.
         if (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and mesh in {(2, 1), (4, 1), (1, 4), (2, 2)}
-            and flux3_profile in {"sp2", "tp2", "sp4", "tp4", "tp4axis1", "tp2sp2"}
+            and profile is not None
+            and profile.parent_mesh is not None
+            and mesh == profile.worker_mesh
             and parent_mode not in {"0", "false", "off", "direct", "legacy"}
         ):
+            parent_rows, parent_cols = profile.parent_mesh
             os.environ.setdefault(
                 "FLUX3_PARENT_MESH_SHAPE",
-                "8x4" if flux3_profile == "tp2sp2" else "4x8",
+                f"{parent_rows}x{parent_cols}",
             )
-        if (
-            self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and mesh == (4, 2)
-            and flux3_profile == "tp4sp2"
-            and parent_mode not in {"0", "false", "off", "direct", "legacy"}
-        ):
-            os.environ.setdefault("FLUX3_PARENT_MESH_SHAPE", "8x4")
+
         parent_submesh = (
             self.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-            and mesh in ((2, 1), (4, 1), (1, 4), (2, 2), (2, 4), (4, 2), (8, 1), (1, 8))
+            and profile is not None
+            and profile.parent_mesh is not None
+            and mesh == profile.worker_mesh
             and os.environ.get("FLUX3_PARENT_MESH_SHAPE", "").strip().lower()
-            in {"4x8", "8x4"}
-            and os.environ.get("FLUX3_PARENT_MESH_MODE", "direct" if flux3_profile == "sp4" else "parent").strip().lower()
-            not in {"0", "false", "off", "direct", "legacy"}
+            == f"{profile.parent_mesh[0]}x{profile.parent_mesh[1]}"
+            and parent_mode not in {"0", "false", "off", "direct", "legacy"}
         )
         if parent_submesh:
             logger.info(

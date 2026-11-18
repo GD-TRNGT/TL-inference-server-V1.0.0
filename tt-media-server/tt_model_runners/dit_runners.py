@@ -523,240 +523,25 @@ def _resolve_flux3_weights_path(settings_path: str | None) -> str | None:
     return settings_path
 
 
+def _flux3_profile(mesh_shape: tuple[int, int]):
+    """Return the canonical profile for compatibility callers and tests."""
+    return resolve_flux3_profile(tuple(mesh_shape))
+
+
 def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
-    """Resolve an explicit FLUX.3 worker profile from its logical mesh."""
-    normalized = tuple(mesh_shape)
-    requested = os.environ.get("FLUX3_EXECUTION_PROFILE", "auto").strip().lower()
-    aliases = {
-        "legacy": "legacy-single",
-        "single": "legacy-single",
-        "single-card": "legacy-single",
-        "legacy-single": "legacy-single",
-        "sp2": "sp2",
-        "tp2": "tp2",
-        "sp4": "sp4",
-        "sp-4": "sp4",
-        "sp8": "sp8",
-        "sp-8": "sp8",
-        "tp2sp4": "tp2sp4",
-        "tp2-sp4": "tp2sp4",
-        "tp2sp2": "tp2sp2",
-        "tp2-sp2": "tp2sp2",
-        "sp2tp2": "tp2sp2",
-        "sp2-tp2": "tp2sp2",
-        "sp4tp2": "tp2sp4",
-        "sp4-tp2": "tp2sp4",
-        "tp4sp2": "tp4sp2",
-        "tp4-sp2": "tp4sp2",
-        "sp2tp4": "tp4sp2",
-        "sp2-tp4": "tp4sp2",
-        "sp8tp4": "sp8tp4",
-        "sp8-tp4": "sp8tp4",
-        "tp8ring": "tp8ring",
-        "tp8-ring": "tp8ring",
-        "pure-tp8-ring": "tp8ring",
-        "pure_tp8_ring": "tp8ring",
-        "tp4": "tp4",
-        "tp4axis1": "tp4axis1",
-        "tp4-axis1": "tp4axis1",
-        "tp4_axis1": "tp4axis1",
-    }
-    if requested in {"", "auto"}:
-        # (4, 1) is shared by two different execution semantics:
-        #   * SP4: replicated weights + sequence-parallel image rows
-        #   * TP4: sharded weights + no sequence parallelism
-        # The mesh shape alone cannot distinguish them.  Previously this
-        # branch silently selected SP4, which made a requested pure TP4 run
-        # execute the wrong model path.  Resolve only from an explicit
-        # parallelism/TP intent; otherwise fail instead of guessing.
-        if normalized == (4, 1):
-            explicit_parallelism = os.environ.get("FLUX3_PARALLELISM", "").strip().lower()
-            explicit_tp_size = os.environ.get("FLUX3_TP_SIZE", "").strip()
-            explicit_tp_mesh = os.environ.get("FLUX3_TP_MESH", "").strip().lower()
-
-            if explicit_parallelism in {"sp", "sp4", "sp-4"}:
-                return "sp4"
-            if (
-                explicit_parallelism in {"tp", "tp4"}
-                or explicit_tp_size == "4"
-                or explicit_tp_mesh == "4x1"
-            ):
-                return "tp4"
-            raise ValueError(
-                "FLUX3 mesh (4,1) is ambiguous under FLUX3_EXECUTION_PROFILE=auto; "
-                "set FLUX3_EXECUTION_PROFILE=sp4 for SP4 or "
-                "FLUX3_EXECUTION_PROFILE=tp4 for pure TP4"
-            )
-
-        detected = {
-            (1, 1): "legacy-single",
-            (2, 1): "sp2",
-            (8, 1): "sp8",
-            (1, 8): "tp8ring",
-            (2, 4): "tp2sp4",
-            (4, 2): "tp4sp2",
-            (4, 8): "sp8tp4",
-        }.get(normalized)
-        return detected or "tp"
-    try:
-        profile = aliases[requested]
-    except KeyError as exc:
-        raise ValueError(
-            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp4, tp4axis1, sp2, sp4, sp8, tp8ring, tp2sp2, tp2sp4, tp4sp2, or sp8tp4"
-        ) from exc
-    expected_mesh = {
-        "legacy-single": (1, 1),
-        "tp2": (2, 1),
-        "tp4": (4, 1),
-        "tp4axis1": (1, 4),
-        "sp2": (2, 1),
-        "sp4": (4, 1),
-        "sp8": (8, 1),
-        "tp8ring": (1, 8),
-        "tp2sp2": (2, 2),
-        "tp2sp4": (2, 4),
-        "tp4sp2": (4, 2),
-        "sp8tp4": (4, 8),
-    }[profile]
-    if normalized != expected_mesh:
-        raise ValueError(
-            f"FLUX3_EXECUTION_PROFILE={profile} requires mesh {expected_mesh}, got {normalized}"
-        )
-    return profile
+    return _flux3_profile(mesh_shape).name
 
 
 def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
-    """Return the supported FLUX.3 TP degree for one worker mesh."""
-    normalized = tuple(mesh_shape)
-    profile = _flux3_execution_profile(normalized)
-    if profile in {"legacy-single", "sp2", "sp4", "sp8"}:
-        return 1
-    if profile in {"tp2", "tp2sp2"}:
-        return 2
-    if profile == "tp4":
-        return 4
-    if profile == "tp4axis1":
-        return 4
-    if profile == "tp8ring":
-        return 8
-    if profile == "tp2sp4":
-        return 2
-    if profile == "tp4sp2":
-        return 4
-    if profile == "sp8tp4":
-        return 4
-    if os.environ.get("FLUX3_PARALLELISM", "tp").strip().lower() == "sp" and normalized == (2, 1):
-        return 1
-    # SP8 x TP4 uses axis 0 for tensor-parallel weights and axis 1 for
-    # sequence-parallel image tokens.
-    degrees = {
-        (1, 1): 1,
-        (2, 1): 2,
-        (1, 4): 4,
-        (4, 1): 4,
-        (8, 1): 1,
-        (1, 8): 8,
-        (2, 4): 2,
-        (4, 8): 4,
-    }
-    try:
-        return degrees[normalized]
-    except KeyError as exc:
-        raise ValueError(
-            "FLUX.3 supports only mesh shapes (1,1), (2,1), (1,4), (4,1), (8,1), (2,4), or (4,8); "
-            f"got {normalized}"
-        ) from exc
-
+    return _flux3_profile(mesh_shape).tp_degree
 
 
 def _flux3_parallel_factors(
     mesh_shape: tuple[int, int],
 ) -> tuple[tuple[int, int], tuple[int, int]]:
-    """Return (tensor-parallel, sequence-parallel) factors for a FLUX.3 mesh."""
-    normalized = tuple(mesh_shape)
-    profile = _flux3_execution_profile(normalized)
-    if profile == "legacy-single":
-        return ((1, 1), (1, 0))
-    if profile == "tp2":
-        # Pure TP2 shards the hidden dimension across the two-chip mesh.
-        # The worker mesh is (2, 1), so the TP factor must be placed on
-        # physical axis 0.  Using axis 1 leaves the two-chip dimension
-        # unsharded and makes the cache look like SP2.
-        return ((2, 0), (1, 0))
-    if profile == "tp4":
-        return ((4, 0), (1, 0))
-    if profile == "tp4axis1":
-        # Same pure-TP4 semantics as tp4, but shard tensor-parallel weights
-        # over mesh axis 1 of the parent-derived (1,4) child.
-        return ((4, 1), (1, 0))
-    if profile == "sp2":
-        return ((1, 1), (2, 0))
-    if profile == "sp4":
-        return ((1, 1), (4, 0))
-    if profile == "sp8":
-        return ((1, 1), (8, 0))
-    if profile == "tp8ring":
-        # Pure TP8 uses the 8-wide Ring for hidden/head sharding and has no
-        # sequence-parallel axis.
-        return ((8, 1), (1, 0))
-    if profile == "tp2sp4":
-        # A 2x4 tray mesh: tensor-parallel weights on axis 0 and image-token
-        # sequence parallelism on the physical four-chip line at axis 1.
-        return ((2, 0), (4, 1))
-    if profile == "tp2sp2":
-        return ((2, 0), (2, 1))
-    if profile == "tp4sp2":
-        # Transpose the physical tray axes: TP4 uses the four-chip line and
-        # SP2 partitions image-token rows over the two-chip line.
-        return ((4, 0), (2, 1))
-    if profile == "sp8tp4":
-        return ((4, 0), (8, 1))
-    parallelism = os.environ.get("FLUX3_PARALLELISM", "tp").strip().lower()
-    if parallelism not in {"tp", "tp8ring", "sp", "sp8", "tp2sp4", "tp4sp2", "sp8tp4"}:
-        raise ValueError(
-            "FLUX3_PARALLELISM must be 'tp', 'tp8ring', 'sp', 'sp8', 'tp2sp4', 'tp4sp2', or 'sp8tp4'"
-        )
-    if parallelism == "sp8":
-        if normalized == (8, 1):
-            return ((1, 1), (8, 0))
-        raise ValueError(
-            f"FLUX.3 SP8 requires an (8, 1) worker mesh; got {normalized}"
-        )
-    if parallelism == "tp8ring":
-        if normalized == (1, 8):
-            return ((8, 1), (1, 0))
-        raise ValueError(
-            f"FLUX.3 tp8ring requires a (1, 8) worker mesh; got {normalized}"
-        )
-    if parallelism == "sp8tp4":
-        if normalized == (4, 8):
-            # Match upstream FLUX.3 Klein: TP4 on axis 0 and SP8 on axis 1.
-            return ((4, 0), (8, 1))
-        raise ValueError(
-            "FLUX.3 SP8xTP4 requires a (4, 8) worker mesh; "
-            f"got {normalized}"
-        )
-    if parallelism == "sp":
-        if normalized == (2, 1):
-            # The physical first axis is the sequence dimension.  Axis 1 has
-            # one device and is retained as the logical TP axis so DiT weights
-            # stay replicated across the SP pair.
-            return ((1, 1), (2, 0))
-        raise ValueError(
-            "FLUX.3 SP currently supports only a (2, 1) worker mesh; "
-            f"got {normalized}"
-        )
-    factors = {
-        (1, 1): ((1, 0), (1, 0)),
-        (2, 1): ((2, 0), (1, 0)),
-        # A physical 2x2 N300 group can be presented as either TP-ring axis.
-        (1, 4): ((4, 1), (1, 0)),
-        (4, 1): ((4, 0), (1, 0)),
-    }
-    try:
-        return factors[normalized]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported FLUX.3 mesh shape: {normalized}") from exc
+    profile = _flux3_profile(mesh_shape)
+    return profile.tensor_parallel, profile.sequence_parallel
+
 
 class TTFlux3ImageKleinRunner(TTDiTRunner):
     """FLUX.3 Image Klein text-to-image runner backed by the TTNN pipeline."""

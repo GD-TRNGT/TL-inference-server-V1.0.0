@@ -45,9 +45,28 @@ class Flux3Profile:
         return self.name
 
 
+# The descriptor is a property of the physical worker mesh, not of the model
+# runner. Keeping it beside the profile prevents settings, discovery and the
+# runner from maintaining separate descriptor tables.
+_PROFILE_DESCRIPTORS = {
+    "legacy-single": "n150_mesh_graph_descriptor.textproto",
+    "sp2": "bh_galaxy_flux3_sp2_ring.textproto",
+    "tp2": "bh_galaxy_flux3_sp2_linear.textproto",
+    "sp4": "n300_2x2_mesh_graph_descriptor.textproto",
+    "tp4": "n300_2x2_mesh_graph_descriptor.textproto",
+    "tp4axis1": "n300_2x2_mesh_graph_descriptor.textproto",
+    "tp2sp2": "bh_galaxy_flux3_tp2sp2_mesh.textproto",
+    "tp2sp4": "bh_galaxy_flux3_tp2sp4_torus.textproto",
+    "tp4sp2": "bh_galaxy_flux3_tp4sp2_mesh.textproto",
+    "sp8": "bh_galaxy_flux3_sp8_ring.textproto",
+    "tp8ring": "bh_galaxy_flux3_tp8_ring.textproto",
+    "sp8tp4": "bh_galaxy_flux3_sp8tp4_ring.textproto",
+}
+
+
 _PROFILES = {
     "legacy-single": Flux3Profile(
-        "legacy-single", (1, 1), None, (1, 0), (1, 0), "linear", "disabled", 1, False
+        "legacy-single", (1, 1), None, (1, 1), (1, 0), "linear", "disabled", 1, False
     ),
     "sp2": Flux3Profile(
         "sp2", (2, 1), (4, 8), (1, 1), (2, 0), "linear", "1d_ring", 1, True
@@ -145,6 +164,22 @@ def get_flux3_profile(value: str | None) -> Flux3Profile:
     if name == "auto":
         raise ValueError("auto does not identify a concrete FLUX3 profile")
     return _PROFILES[name]
+
+
+def get_flux3_descriptor(value: Flux3Profile | str | None) -> str | None:
+    """Return the direct-open mesh descriptor for a concrete profile.
+
+    Parent/child mode deliberately does not use this descriptor: the parent
+    mesh is opened using the runtime's native Galaxy topology and the worker
+    selects a child view from it.
+    """
+    if isinstance(value, Flux3Profile):
+        name = value.name
+    else:
+        name = canonical_profile_name(value)
+    if name == "auto":
+        return None
+    return _PROFILE_DESCRIPTORS[name]
 
 
 def resolve_flux3_profile(
