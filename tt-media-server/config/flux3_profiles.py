@@ -38,7 +38,7 @@ class Flux3Profile:
 
     @property
     def canonical_parallelism(self) -> str:
-        if self.name in {"legacy-single", "tp2", "tp2linear", "tp4", "tp4axis1"}:
+        if self.name in {"legacy-single", "tp2", "tp4", "tp4axis1"}:
             return "tp"
         if self.name == "sp2":
             return "sp"
@@ -59,13 +59,6 @@ _PROFILES = {
         # Keep pure TP2 on the reliable linear path; TP2 still shards the
         # hidden dimension across axis 0.
         "tp2", (2, 1), None, (2, 0), (1, 0), "linear", "1d", 1, True
-    ),
-    "tp2linear": Flux3Profile(
-        # This profile was accidentally declared as Ring while selecting a
-        # linear Fabric descriptor.  That topology/Fabric mismatch caused the
-        # same warmup hang as tp2.  Both explicit TP2 profiles now describe
-        # the actual 2x1 Linear execution path.
-        "tp2linear", (2, 1), None, (2, 0), (1, 0), "linear", "1d", 1, True
     ),
     "sp4": Flux3Profile(
         "sp4", (4, 1), (4, 8), (1, 1), (4, 0), "ring", "1d_ring", 2, True
@@ -106,9 +99,6 @@ PROFILE_ALIASES = {
     "legacy-single": "legacy-single",
     "sp2": "sp2",
     "tp2": "tp2",
-    "tp2linear": "tp2linear",
-    "tp2-linear": "tp2linear",
-    "tp2_line": "tp2linear",
     "sp4": "sp4",
     "sp-4": "sp4",
     "sp8": "sp8",

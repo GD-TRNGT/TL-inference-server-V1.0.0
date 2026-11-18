@@ -190,7 +190,6 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
         or (flux3_profile in {"", "auto"} and flux3_parallelism == "tp2sp4")
     )
     is_flux3_tp2 = flux3_profile == "tp2"
-    is_flux3_tp2linear = flux3_profile in {"tp2linear", "tp2-linear", "tp2_line"}
     is_flux3_tp4sp2 = (
         flux3_profile in {"tp4sp2", "tp4-sp2", "sp2tp4", "sp2-tp4"}
         or (flux3_profile in {"", "auto"} and flux3_parallelism == "tp4sp2")
@@ -331,13 +330,13 @@ def _setup_galaxy_mesh_config(tt_metal_home: str):
 
     if (
         settings.model_runner == ModelRunners.TT_FLUX_3_IMAGE_KLEIN.value
-        and (is_flux3_tp2 or is_flux3_tp2linear)
+        and is_flux3_tp2
     ):
         # A 2x1 child has no valid wrapping axis for the Galaxy 1D Ring
         # fabric.  Pure TP2 therefore uses the same physical linear
         # descriptor for both public TP2 profile names.  Keeping the
         # descriptor, FabricConfig and pipeline topology aligned avoids the
-        # post-initialization warmup hang seen with tp2.
+        # post-initialization warmup hang seen with the public TP2 profile.
         descriptor = "bh_galaxy_flux3_sp2_linear.textproto"
         os.environ["TT_MESH_GRAPH_DESC_PATH"] = (
             f"{tt_metal_home}/tt_metal/fabric/mesh_graph_descriptors/"

@@ -534,9 +534,6 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         "legacy-single": "legacy-single",
         "sp2": "sp2",
         "tp2": "tp2",
-        "tp2linear": "tp2linear",
-        "tp2-linear": "tp2linear",
-        "tp2_line": "tp2linear",
         "sp4": "sp4",
         "sp-4": "sp4",
         "sp8": "sp8",
@@ -605,12 +602,11 @@ def _flux3_execution_profile(mesh_shape: tuple[int, int]) -> str:
         profile = aliases[requested]
     except KeyError as exc:
         raise ValueError(
-            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp2linear, tp4, tp4axis1, sp2, sp4, sp8, tp8ring, tp2sp2, tp2sp4, tp4sp2, or sp8tp4"
+            "FLUX3_EXECUTION_PROFILE must be auto, legacy-single, tp2, tp4, tp4axis1, sp2, sp4, sp8, tp8ring, tp2sp2, tp2sp4, tp4sp2, or sp8tp4"
         ) from exc
     expected_mesh = {
         "legacy-single": (1, 1),
         "tp2": (2, 1),
-        "tp2linear": (2, 1),
         "tp4": (4, 1),
         "tp4axis1": (1, 4),
         "sp2": (2, 1),
@@ -635,7 +631,7 @@ def _flux3_tp_degree(mesh_shape: tuple[int, int]) -> int:
     profile = _flux3_execution_profile(normalized)
     if profile in {"legacy-single", "sp2", "sp4", "sp8"}:
         return 1
-    if profile in {"tp2", "tp2linear", "tp2sp2"}:
+    if profile in {"tp2", "tp2sp2"}:
         return 2
     if profile == "tp4":
         return 4
@@ -681,7 +677,7 @@ def _flux3_parallel_factors(
     profile = _flux3_execution_profile(normalized)
     if profile == "legacy-single":
         return ((1, 1), (1, 0))
-    if profile in {"tp2", "tp2linear"}:
+    if profile == "tp2":
         # Pure TP2 shards the hidden dimension across the two-chip mesh.
         # The worker mesh is (2, 1), so the TP factor must be placed on
         # physical axis 0.  Using axis 1 leaves the two-chip dimension
@@ -911,7 +907,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             # experimental TP2 weight-sharded cache can deadlock during the
             # first device-to-host cache write.  TP4/TP8 retain their tested
             # VAE parallel configurations.
-            if self._execution_profile in {"tp2", "tp2linear"}:
+            if self._execution_profile == "tp2":
                 vae_parallel = Flux2VaeParallelConfig()
             elif self._dit_parallel.tensor_parallel.factor > 1:
                 vae_parallel = Flux2VaeParallelConfig.from_axes(

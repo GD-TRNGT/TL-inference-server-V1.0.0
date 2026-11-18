@@ -46,7 +46,7 @@ def test_aliases_are_canonical():
     assert get_flux3_profile("tp4-axis1").worker_mesh == (1, 4)
 
 
-@pytest.mark.parametrize("name", ["tp2", "tp2linear"])
+@pytest.mark.parametrize("name", ["tp2"])
 def test_pure_tp2_profiles_use_matching_linear_transport(name):
     profile = get_flux3_profile(name)
     assert profile.worker_mesh == (2, 1)
