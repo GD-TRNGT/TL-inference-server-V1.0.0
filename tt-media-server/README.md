@@ -418,6 +418,34 @@ curl -X 'POST' \
 
 The response includes the list of base64-encoded images and total `generation_time` in seconds.
 
+For FLUX.3 Image Klein, the synchronous generation endpoint also accepts
+`multipart/form-data`. Use repeated `reference_images` file parts for ordered
+reference images; the same request fields are accepted as form fields:
+
+```bash
+curl --fail-with-body --show-error \
+  -X POST 'http://127.0.0.1:8000/v1/images/generations' \
+  -H 'Authorization: Bearer your-secret-key' \
+  -F 'model=tt-flux.3-image-klein' \
+  -F 'prompt=combine the subject of the first image with the second image background' \
+  -F 'width=1024' \
+  -F 'height=1024' \
+  -F 'num_inference_steps=16' \
+  -F 'seed=42' \
+  -F 'response_format=file' \
+  -F 'image_return_format=JPEG' \
+  -F 'reference_images=@reference_1.jpg;type=image/jpeg' \
+  -F 'reference_images=@reference_2.png;type=image/png' \
+  --output result.jpg
+```
+
+`POST /v1/images/generations/async` accepts the same JSON or multipart payload.
+Multipart uploads require `image/*` content types and non-empty files; the
+default per-file limit is 32 MiB and can be changed with
+`FLUX3_REFERENCE_UPLOAD_MAX_BYTES`. Invalid image content returns `422`, and
+an oversized upload returns `413`. The legacy JSON/Base64 form remains
+supported, and one request still produces one image (`number_of_images=1`).
+
 ## Image-to-image test call
 
 Available when `MODEL_RUNNER=tt-sdxl-image-to-image`.

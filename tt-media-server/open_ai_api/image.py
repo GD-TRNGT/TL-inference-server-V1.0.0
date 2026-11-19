@@ -8,19 +8,21 @@ import io
 import json
 import os
 import zipfile
+from typing import Any
 
 from config.constants import ModelRunners
 from config.settings import settings
 from domain.image_edit_request import ImageEditRequest
 from domain.image_generate_request import ImageGenerateRequest
 from domain.image_to_image_request import ImageToImageRequest
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Security, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Security, UploadFile
 from fastapi.responses import JSONResponse, Response
 from model_services.base_service import BaseService
 from model_services.image_service import ImageService
 from resolver.service_resolver import service_resolver
 from security.api_key_checker import get_api_key
 from config.constants import JobTypes
+from pydantic import ValidationError
 
 _LORA_DIR = os.environ.get("LORA_DIR", "/loras")
 _LORA_STATE = os.path.join(_LORA_DIR, "active_lora.json")
@@ -32,6 +34,9 @@ _LORA_CHUNK_BYTES = 1024 * 1024
 _LORA_MAX_SCALE = 2.0
 # safetensors caps its JSON header at 100 MB; anything larger is not a real file.
 _SAFETENSORS_MAX_HEADER_BYTES = 100 * 1024 * 1024
+_REFERENCE_UPLOAD_MAX_BYTES = int(
+    os.environ.get("FLUX3_REFERENCE_UPLOAD_MAX_BYTES", 32 * 1024 * 1024)
+)
 
 
 def _image_bytes_from_base64(payload: str) -> bytes:
@@ -141,12 +146,113 @@ async def _save_capped(upload: UploadFile, dest: str) -> int:
     return written
 
 
+async def _upload_image_to_data_url(upload: UploadFile) -> str:
+    """Read one multipart image and convert it to the existing runner payload."""
+    content_type = (upload.content_type or "").lower().strip()
+    if not content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{upload.filename or 'reference image'} must have an image/* content type",
+        )
+
+    content = await upload.read(_REFERENCE_UPLOAD_MAX_BYTES + 1)
+    if len(content) > _REFERENCE_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"reference image exceeds {_REFERENCE_UPLOAD_MAX_BYTES} bytes"
+            ),
+        )
+    if not content:
+        raise HTTPException(status_code=422, detail="reference image is empty")
+
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def _multipart_scalar(value: Any) -> Any:
+    """Convert common JSON-shaped multipart fields without changing strings."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if stripped.startswith(("[", "{")):
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="multipart JSON field is not valid JSON",
+            ) from exc
+    return value
+
+
+def _is_upload(value: Any) -> bool:
+    # Starlette returns starlette.datastructures.UploadFile instances from
+    # FormData; FastAPI's UploadFile annotation is a compatible wrapper but is
+    # not guaranteed to be the concrete runtime type.
+    return hasattr(value, "filename") and callable(getattr(value, "read", None))
+
+
+async def _parse_image_generate_request(request: Request) -> ImageGenerateRequest:
+    """Accept both JSON/Base64 and multipart/form-data image requests.
+
+    Multipart image fields may be repeated as ``reference_images``. The legacy
+    singular ``reference_image`` and ``image`` names are also accepted and are
+    normalized to the same ordered reference_images list.
+    """
+    content_type = request.headers.get("content-type", "").lower()
+    if content_type.startswith("application/json"):
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=422, detail="request body is not valid JSON") from exc
+    elif content_type.startswith("multipart/form-data"):
+        try:
+            form = await request.form()
+        except (AssertionError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=415,
+                detail="multipart/form-data support requires python-multipart",
+            ) from exc
+
+        payload: dict[str, Any] = {}
+        upload_fields = {"reference_images", "reference_image", "image"}
+        for key, value in form.multi_items():
+            if key in upload_fields or _is_upload(value):
+                continue
+            payload[key] = _multipart_scalar(value)
+
+        reference_images: list[str] = []
+        for key, value in form.multi_items():
+            if key not in upload_fields:
+                continue
+            if _is_upload(value):
+                reference_images.append(await _upload_image_to_data_url(value))
+            elif isinstance(value, str) and value.strip():
+                reference_images.append(value.strip())
+
+        if reference_images:
+            payload["reference_images"] = reference_images
+            payload.pop("reference_image", None)
+            payload.pop("image", None)
+    else:
+        raise HTTPException(
+            status_code=415,
+            detail="Content-Type must be application/json or multipart/form-data",
+        )
+
+    try:
+        return ImageGenerateRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
 generate_image_router = APIRouter()
 
 
 @generate_image_router.post("/generations")
 async def generate_image(
-    image_generate_request: ImageGenerateRequest,
+    request: Request,
     service: BaseService = Depends(service_resolver),
     api_key: str = Security(get_api_key),
 ):
@@ -163,6 +269,12 @@ async def generate_image(
         import time as _time
 
         _t0 = _time.time()
+        # Keep direct Python callers compatible with the old handler contract;
+        # FastAPI always supplies a Request object for the HTTP route.
+        if isinstance(request, ImageGenerateRequest):
+            image_generate_request = request
+        else:
+            image_generate_request = await _parse_image_generate_request(request)
         result = await service.process_request(image_generate_request)
         _elapsed = round(_time.time() - _t0, 2)
         return _build_image_response(result, image_generate_request, _elapsed)
@@ -174,11 +286,15 @@ async def generate_image(
 
 @generate_image_router.post("/generations/async", status_code=202)
 async def submit_async_image(
-    image_generate_request: ImageGenerateRequest,
+    request: Request,
     service: ImageService = Depends(service_resolver),
     api_key: str = Security(get_api_key),
 ):
     try:
+        if isinstance(request, ImageGenerateRequest):
+            image_generate_request = request
+        else:
+            image_generate_request = await _parse_image_generate_request(request)
         return JSONResponse(content=await service.create_image_job(image_generate_request), status_code=202)
     except HTTPException:
         raise
