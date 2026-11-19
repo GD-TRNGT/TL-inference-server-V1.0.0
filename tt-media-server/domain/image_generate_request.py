@@ -5,6 +5,7 @@
 import base64
 import binascii
 import io
+import math
 import warnings
 from typing import List, Literal, Optional, Tuple, Union
 
