@@ -13,6 +13,8 @@ double_buffer=true
 
 `double_buffer=true` 是收益的主要来源。默认请求 `act_block_h=64`；在一部分 SP8 decoder 卷积层中，64 不能满足 TTNN 的 tile/每核心输出高度约束，运行时会自动回退到 32。该“64 优先、逐层回退”的路径已完整 warmup 并跑通，正式 decode 为 3.054s；默认保留这一最快实测结果，同时仍允许通过环境变量做诊断覆盖。
 
+小 worker 的边界单独处理：4 卡及以下不预热 `4096×4096`，并在 API 入队前以 HTTP 422 拒绝该尺寸；这些 worker 只预热 `1024×1024` 和 `2048×2048`。8 卡及以上继续保留 `4096×4096` warmup 和已验证的 SP8/TP8 调度。
+
 ## 2. 实测条件和结果
 
 固定条件：Galaxy03 的 8×1 physical Ring `(0,1,2,3,11,10,9,8)`、`FLUX3_EXECUTION_PROFILE=sp8`、`FLUX3_CORE_GRID_OVERRIDE=12x10`、`TT_METAL_TDP_LIMIT_WATTS=160`、`TT_MM_THROTTLE_PERF=0`、Distilled、`a black bird`、seed 42、无参考图、4096×4096、16 steps。每组先完成服务完整 warmup（包括无参考图和一张参考图 layout），再发送一条正式 API 请求。
@@ -50,10 +52,10 @@ act_block_h_override 64 is not a valid override ... instead 32 was selected
 | --- | ---: | ---: | --- | --- | --- |
 | `legacy-single` | 1 | 32 | TP1 × SP1 | H1 | `64 / true` |
 | `sp2` | 2 | 16 | TP1 × SP2 | H2 | `64 / true` |
-| `sp4` | 4 | 8 | TP1 × SP4 Ring | H4 | `64 / true` |
+| `sp4` | 4 | 8 | TP1 × SP4 Ring | H4 | `64 / true`（不预热/不支持 4096×4096） |
 | `sp8` | 8 | 4 | TP1 × SP8 Ring | H8 | **`64 / true`，不合法层自动回退 32** |
 
-单卡、SP2、SP4 的 H shard 较大，64-row block 直接生效。SP8 的每卡图像行数更少、4096 宽 halo convolution 工作集更紧张，因此保持 64 优先但由 TTNN 对不合法层选择 32；四种正式 profile 都启用 double buffer。
+单卡、SP2、SP4 的 H shard 较大，常规 1024/2048 请求使用 `64 / true`。4 卡及以下不把 4096×4096 放入 warmup，也不接受该请求，从而避免在小 worker 上为不可支持的 VAE geometry 分配 L1。SP8 的每卡图像行数更少、4096 宽 halo convolution 工作集更紧张，因此保持 64 优先但由 TTNN 对不合法层选择 32；8 卡及以上保留 4096 路径。
 
 ## 5. 实现与覆盖方式
 

@@ -48,9 +48,10 @@ def validate_flux3_geometry(
     """Validate FLUX.3 output geometry and known worker-memory limits.
 
     FLUX.3 accepts 16-pixel aligned dimensions up to 4096 per side. The
-    current 4-chip Klein decoder path cannot fit 4096x4096 in L1; larger
-    workers use the validated distributed VAE path. Other runners are not
-    constrained by this policy.
+    current Klein service deliberately does not expose 4096x4096 on workers
+    with four or fewer cards: those workers omit the 4096 warmup and reject
+    that request before allocating VAE buffers. Larger workers retain the
+    validated 4096 path. Other runners are not constrained by this policy.
     """
     if model_runner != FLUX3_RUNNER:
         return
@@ -71,9 +72,9 @@ def validate_flux3_geometry(
             "FLUX.3 width and height must be multiples of "
             f"{FLUX3_SHAPE_MULTIPLE}; got {width}x{height}"
         )
-    if flux3_mesh_size(mesh_shape) == 4 and width == 4096 and height == 4096:
+    if flux3_mesh_size(mesh_shape) <= 4 and width == 4096 and height == 4096:
         raise ValueError(
-            "FLUX.3 4096x4096 is not supported on a 4-card worker; "
+            "FLUX.3 4096x4096 is not supported on a worker with four or fewer cards; "
             "use a worker with at least 8 cards"
         )
 

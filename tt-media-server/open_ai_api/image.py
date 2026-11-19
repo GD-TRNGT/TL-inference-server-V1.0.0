@@ -11,6 +11,7 @@ import zipfile
 from typing import Any
 
 from config.constants import ModelRunners
+from config.flux3_policy import validate_flux3_geometry
 from config.settings import settings
 from domain.image_edit_request import ImageEditRequest
 from domain.image_generate_request import ImageGenerateRequest
@@ -193,6 +194,21 @@ def _is_upload(value: Any) -> bool:
     return hasattr(value, "filename") and callable(getattr(value, "read", None))
 
 
+def _validation_error_detail(exc: ValidationError) -> list[dict[str, Any]]:
+    """Make Pydantic v2 error contexts JSON serializable.
+
+    Custom validators may place the original ``ValueError`` in ``ctx.error``;
+    passing that object directly as an HTTPException detail makes FastAPI emit
+    a secondary 500 while serializing what should be a 422 response.
+    """
+    errors = exc.errors()
+    for error in errors:
+        context = error.get("ctx")
+        if isinstance(context, dict):
+            error["ctx"] = {key: str(value) for key, value in context.items()}
+    return errors
+
+
 async def _parse_image_generate_request(request: Request) -> ImageGenerateRequest:
     """Accept both JSON/Base64 and multipart/form-data image requests.
 
@@ -244,7 +260,20 @@ async def _parse_image_generate_request(request: Request) -> ImageGenerateReques
     try:
         return ImageGenerateRequest.model_validate(payload)
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        raise HTTPException(status_code=422, detail=_validation_error_detail(exc)) from exc
+
+
+def _validate_image_request_geometry(image_request: ImageGenerateRequest) -> None:
+    """Reject profile-specific FLUX.3 geometry before queueing device work."""
+    try:
+        validate_flux3_geometry(
+            int(image_request.width or 2048),
+            int(image_request.height or 2048),
+            model_runner=settings.model_runner,
+            mesh_shape=tuple(settings.device_mesh_shape or (1, 1)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 generate_image_router = APIRouter()
@@ -275,6 +304,7 @@ async def generate_image(
             image_generate_request = request
         else:
             image_generate_request = await _parse_image_generate_request(request)
+        _validate_image_request_geometry(image_generate_request)
         result = await service.process_request(image_generate_request)
         _elapsed = round(_time.time() - _t0, 2)
         return _build_image_response(result, image_generate_request, _elapsed)
@@ -295,6 +325,7 @@ async def submit_async_image(
             image_generate_request = request
         else:
             image_generate_request = await _parse_image_generate_request(request)
+        _validate_image_request_geometry(image_generate_request)
         return JSONResponse(content=await service.create_image_job(image_generate_request), status_code=202)
     except HTTPException:
         raise

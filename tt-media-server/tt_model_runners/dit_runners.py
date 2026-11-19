@@ -8,6 +8,7 @@ import io
 import os
 import uuid
 from abc import abstractmethod
+from math import prod
 from pathlib import Path
 
 import numpy as np
@@ -587,6 +588,24 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             profile = resolve_flux3_profile(tuple(self.settings.device_mesh_shape))
         return profile.uses_klein_pipeline
 
+    def _filter_flux3_warmup_sizes(self, sizes: tuple[int, ...]) -> tuple[int, ...]:
+        """Remove the unsupported 4096 square warmup on small workers.
+
+        The public geometry validator makes the same four-card-and-below
+        decision for requests. Keeping the startup filter here prevents a
+        small worker from allocating the 4096 VAE buffers only to fail during
+        warmup.
+        """
+        if prod(int(value) for value in self.ttnn_device.shape) <= 4 and 4096 in sizes:
+            filtered = tuple(size for size in sizes if size != 4096)
+            card_count = prod(int(value) for value in self.ttnn_device.shape)
+            self.logger.info(
+                f"Device {self.device_id}: skipping unsupported 4096x4096 warmup "
+                f"on {card_count}-card worker"
+            )
+            return filtered
+        return sizes
+
     def create_pipeline(self):
         if self._uses_klein_pipeline():
             mesh_shape = tuple(self.ttnn_device.shape)
@@ -615,6 +634,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
                 if warmup_sizes_env
                 else default_sizes
             )
+            warmup_sizes = self._filter_flux3_warmup_sizes(warmup_sizes)
             if not warmup_sizes:
                 raise ValueError("FLUX3_WARMUP_SIZES must contain at least one resolution")
             return Flux3KleinPipeline(
@@ -721,6 +741,7 @@ class TTFlux3ImageKleinRunner(TTDiTRunner):
             if warmup_sizes_env
             else default_warmup_sizes
         )
+        warmup_sizes = self._filter_flux3_warmup_sizes(warmup_sizes)
         if not warmup_sizes:
             raise ValueError("FLUX3_WARMUP_SIZES must contain at least one resolution")
         self.logger.info(
