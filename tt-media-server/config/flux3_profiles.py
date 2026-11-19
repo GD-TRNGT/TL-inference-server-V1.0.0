@@ -124,7 +124,14 @@ _PROFILES = {
     ),
     "sp8": Flux3Profile(
         "sp8", (8, 1), (8, 4), (1, 1), (8, 0), "ring", "1d_ring", 2, True,
-        "sp8_ring", "tp_axis"
+        "sp8_ring", "tp_axis",
+        # TP1xSP8 keeps 2048/4096 available for on-demand requests, but only
+        # compiles the small representative shape during startup.  A warmup
+        # matrix containing several sizes, reference layouts and text buckets
+        # exhausts per-chip DRAM before the service becomes ready.  The Klein
+        # pipeline still receives all three sizes for shape-aware VAE slicing;
+        # larger request-time layouts are compiled lazily.
+        runner_warmup_sizes=(1024,),
     ),
     "tp8ring": Flux3Profile(
         "tp8ring", (1, 8), (4, 8), (8, 1), (1, 0), "ring", "1d_ring", 1, False,
