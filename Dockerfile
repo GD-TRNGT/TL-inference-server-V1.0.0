@@ -9,6 +9,7 @@
 # Only the built artifacts and files are copied to the runtime stage.
 # Runtime dependencies must be installed separately in the runtime stage.
 FROM ghcr.io/tenstorrent/tt-metal/tt-metalium/ubuntu-22.04-dev-amd64:latest AS builder
+RUN sed -i -E 's#https?://(archive|security)\.ubuntu\.com/ubuntu#https://mirrors.tuna.tsinghua.edu.cn/ubuntu#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
 
 # Build stage
 LABEL maintainer="Igor Djuric <idjuric@tenstorrent.com>"
@@ -187,6 +188,7 @@ RUN /bin/bash -c "source ${PYTHON_ENV_DIR}/bin/activate \
 
 WORKDIR ${HOME_DIR}
 
+ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 # install inference server requirements
 ARG APP_DIR="${HOME_DIR}/app"
 ENV APP_DIR=${APP_DIR}
@@ -211,7 +213,7 @@ RUN /bin/bash -c "source ${PYTHON_ENV_DIR}/bin/activate \
 COPY "tt-vllm-plugin" "${TT_METAL_HOME}/tt-vllm-plugin"
 RUN /bin/bash -c "source ${PYTHON_ENV_DIR}/bin/activate \
     && cd ${TT_METAL_HOME}/tt-vllm-plugin \
-    && uv pip install ."
+    && UV_INDEX_URL=https://pypi.org/simple UV_EXTRA_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple uv pip install ."
 
 # Compatibility note: fix_dependencies.sh installs the latest diffusers (which needs
 # huggingface_hub >= 1.32) and tt-vllm-plugin then pins transformers==4.55.0 (huggingface_hub < 1.0),
@@ -302,6 +304,7 @@ RUN rm -rf ${HOME_DIR}/.rustup \
 # This is the final image that will be used. Only the built artifacts from the builder stage
 # are copied here. Any runtime dependencies needed by the application must be installed in this stage.
 FROM ghcr.io/tenstorrent/tt-metal/tt-metalium/ubuntu-22.04-dev-amd64:latest AS runtime
+RUN sed -i -E 's#https?://(archive|security)\.ubuntu\.com/ubuntu#https://mirrors.tuna.tsinghua.edu.cn/ubuntu#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
 
 LABEL maintainer="Igor Djuric <idjuric@tenstorrent.com>"
 LABEL org.opencontainers.image.source=https://github.com/tenstorrent/tt-inference-server
